@@ -7,57 +7,91 @@ import os
 app = Flask(__name__)
 
 # Database configuration
-DATABASE = 'rfid_access.db'
+DATABASE = 'room_access.db'
 
 def init_database():
     """Initialize the SQLite database with required tables"""
     conn = sqlite3.connect(DATABASE)
     cursor = conn.cursor()
     
-    # Users table
+    # Users table - stores all users with their roles
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
             rfid_uid TEXT UNIQUE NOT NULL,
-            has_access BOOLEAN DEFAULT TRUE,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            name TEXT NOT NULL,
+            role TEXT NOT NULL CHECK(role IN ('student', 'teacher', 'admin')),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
     
-    # Access logs table
+    # Requests table - stores room access requests
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            uid TEXT NOT NULL,
+            name TEXT NOT NULL,
+            start_time TIMESTAMP NOT NULL,
+            end_time TIMESTAMP NOT NULL,
+            access BOOLEAN DEFAULT FALSE,
+            room TEXT NOT NULL,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            approved_by TEXT,
+            approved_at TIMESTAMP,
+            FOREIGN KEY (uid) REFERENCES users(rfid_uid)
+        )
+    ''')
+    
+    # Rooms table - stores ESP32 device information
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS rooms (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            room TEXT UNIQUE NOT NULL,
+            mac_address TEXT UNIQUE NOT NULL,
+            ip_address TEXT,
+            last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            status TEXT DEFAULT 'offline',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    # Access logs table - logs all access attempts
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS access_logs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             rfid_uid TEXT NOT NULL,
+            room TEXT NOT NULL,
             access_granted BOOLEAN NOT NULL,
-            device_id TEXT,
-            device_ip TEXT,
+            access_type TEXT NOT NULL CHECK(access_type IN ('local', 'database', 'denied')),
             timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             notes TEXT
         )
     ''')
     
-    # Device sync table
+    # ESP32 local cache table - tracks what's stored on each ESP32
     cursor.execute('''
-        CREATE TABLE IF NOT EXISTS device_sync (
+        CREATE TABLE IF NOT EXISTS esp32_cache (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            device_id TEXT NOT NULL,
-            last_sync TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            sync_count INTEGER DEFAULT 0
+            room TEXT NOT NULL,
+            rfid_uid TEXT NOT NULL,
+            name TEXT NOT NULL,
+            expires_at TIMESTAMP NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (room) REFERENCES rooms(room)
         )
     ''')
     
-    # Insert sample data if empty
+    # Insert sample data if tables are empty
     cursor.execute('SELECT COUNT(*) FROM users')
     if cursor.fetchone()[0] == 0:
         sample_users = [
-            ('Apichet Thamraksa', 'EA20B1CC', True),
+            ('EA20B1CC', 'Apichet Thamraksa', 'student'),
+            ('AB12CD34', 'Teacher John', 'teacher'),
+            ('12345678', 'Admin User', 'admin'),
         ]
         
         cursor.executemany(
-            'INSERT INTO users (name, rfid_uid, has_access) VALUES (?, ?, ?)',
+            'INSERT INTO users (rfid_uid, name, role) VALUES (?, ?, ?)',
             sample_users
         )
         print("✅ Sample users added to database")
@@ -74,49 +108,108 @@ def get_db_connection():
 
 @app.route('/')
 def dashboard():
-    """Web dashboard for managing RFID access"""
+    """Admin dashboard for managing room access"""
     return render_template('dashboard.html')
 
-@app.route('/api/check_access', methods=['POST'])
+@app.route('/request')
+def request_page():
+    """Student request page"""
+    return render_template('request.html')
+
+# ================== ESP32 API ENDPOINTS ==================
+
+@app.route('/api/esp32/register', methods=['POST'])
+def register_esp32():
+    """ESP32 registers itself with the server"""
+    try:
+        data = request.get_json()
+        room = data.get('room', '').strip()
+        mac_address = data.get('mac_address', '').strip()
+        ip_address = data.get('ip_address', request.remote_addr)
+        
+        if not room or not mac_address:
+            return jsonify({'error': 'Room name and MAC address are required', 'success': False}), 400
+        
+        conn = get_db_connection()
+        
+        # Register or update ESP32 device
+        conn.execute('''
+            INSERT OR REPLACE INTO rooms (room, mac_address, ip_address, last_seen, status)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'online')
+        ''', (room, mac_address, ip_address))
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({
+            'success': True,
+            'message': f'ESP32 registered successfully for room {room}',
+            'room': room,
+            'mac_address': mac_address,
+            'ip_address': ip_address
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e), 'success': False}), 500
+
+@app.route('/api/esp32/check_access', methods=['POST'])
 def check_access():
-    """Check if RFID card has access"""
+    """Check if RFID card has access to room at current time"""
     try:
         data = request.get_json()
         rfid_uid = data.get('rfid_uid', '').upper()
-        device_id = data.get('device_id', '')
+        device_mac = data.get('device_mac', '')
+        room = data.get('room', '')
         
         conn = get_db_connection()
-        user = conn.execute(
-            'SELECT * FROM users WHERE rfid_uid = ?', (rfid_uid,)
-        ).fetchone()
         
-        if user:
-            # Log the access attempt
+        # Get current time
+        current_time = datetime.now()
+        
+        # Check if user has an active request for this room
+        active_request = conn.execute('''
+            SELECT r.*, u.name as user_name 
+            FROM request_table r
+            JOIN user_table u ON r.uid = u.rfid_uid
+            WHERE r.uid = ? AND r.room = ? AND r.access = TRUE
+            AND r.start_time <= ? AND r.end_time >= ?
+            AND r.status = 'approved'
+            ORDER BY r.start_time DESC
+            LIMIT 1
+        ''', (rfid_uid, room, current_time, current_time)).fetchone()
+        
+        if active_request:
+            # Log successful access
             conn.execute('''
-                INSERT INTO access_logs (rfid_uid, access_granted, device_id, device_ip)
-                VALUES (?, ?, ?, ?)
-            ''', (rfid_uid, user['has_access'], device_id, request.remote_addr))
+                INSERT INTO access_logs (rfid_uid, room, access_granted, device_mac, device_ip, request_id, notes)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (rfid_uid, room, True, device_mac, request.remote_addr, active_request['id'], 'Valid room request'))
             conn.commit()
             
             response = {
-                'access_granted': bool(user['has_access']),
-                'user_name': user['name'],
-                'user_id': user['id'],
-                'message': f"Access {'granted' if user['has_access'] else 'denied'} for {user['name']}"
+                'access_granted': True,
+                'user_name': active_request['user_name'],
+                'request_id': active_request['id'],
+                'end_time': active_request['end_time'],
+                'message': f"Access granted for {active_request['user_name']} until {active_request['end_time']}"
             }
         else:
-            # Log unknown card attempt
+            # Check if user exists
+            user = conn.execute('SELECT * FROM user_table WHERE rfid_uid = ?', (rfid_uid,)).fetchone()
+            
+            # Log failed access attempt
             conn.execute('''
-                INSERT INTO access_logs (rfid_uid, access_granted, device_id, device_ip, notes)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (rfid_uid, False, device_id, request.remote_addr, 'Unknown card'))
+                INSERT INTO access_logs (rfid_uid, room, access_granted, device_mac, device_ip, notes)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (rfid_uid, room, False, device_mac, request.remote_addr, 
+                  'No active room request' if user else 'Unknown card'))
             conn.commit()
             
             response = {
                 'access_granted': False,
-                'user_name': None,
-                'user_id': None,
-                'message': 'Unknown RFID card'
+                'user_name': user['name'] if user else None,
+                'request_id': None,
+                'message': 'No active room request found' if user else 'Unknown RFID card'
             }
         
         conn.close()
@@ -125,36 +218,36 @@ def check_access():
     except Exception as e:
         return jsonify({'error': str(e), 'access_granted': False}), 500
 
-@app.route('/api/sync_cards', methods=['POST'])
-def sync_cards():
-    """Sync all cards for device local storage"""
+@app.route('/api/esp32/cleanup_cache', methods=['POST'])
+def cleanup_esp32_cache():
+    """ESP32 requests cleanup of expired cache entries"""
     try:
         data = request.get_json()
-        device_id = data.get('device_id', '')
+        room = data.get('room', '').strip()
         
         conn = get_db_connection()
         
-        # Update device sync record
-        conn.execute('''
-            INSERT OR REPLACE INTO device_sync (device_id, last_sync, sync_count)
-            VALUES (?, CURRENT_TIMESTAMP, 
-                    COALESCE((SELECT sync_count FROM device_sync WHERE device_id = ?), 0) + 1)
-        ''', (device_id, device_id))
+        # Remove expired entries
+        result = conn.execute('''
+            DELETE FROM esp32_cache 
+            WHERE room = ? AND datetime(expires_at) < datetime('now')
+        ''', (room,))
         
-        # Get all active users
-        users = conn.execute('''
-            SELECT rfid_uid, name, has_access, created_at 
-            FROM users 
-            ORDER BY created_at DESC
-        ''').fetchall()
+        removed_count = result.rowcount
         
-        cards = []
-        for user in users:
-            cards.append({
-                'rfid_uid': user['rfid_uid'],
-                'user_name': user['name'],
-                'has_access': bool(user['has_access']),
-                'created_at': user['created_at']
+        # Get current valid cache entries
+        current_cache = conn.execute('''
+            SELECT rfid_uid, name, expires_at FROM esp32_cache
+            WHERE room = ? AND datetime(expires_at) >= datetime('now')
+            ORDER BY expires_at ASC
+        ''', (room,)).fetchall()
+        
+        cache_list = []
+        for entry in current_cache:
+            cache_list.append({
+                'rfid_uid': entry['rfid_uid'],
+                'name': entry['name'],
+                'expires_at': entry['expires_at']
             })
         
         conn.commit()
@@ -162,40 +255,206 @@ def sync_cards():
         
         return jsonify({
             'success': True,
-            'cards': cards,
-            'sync_time': datetime.now().isoformat(),
-            'total_cards': len(cards)
+            'removed_count': removed_count,
+            'current_cache': cache_list,
+            'message': f'Removed {removed_count} expired entries'
         })
         
     except Exception as e:
         return jsonify({'error': str(e), 'success': False}), 500
 
-@app.route('/api/log_access', methods=['POST'])
-def log_access():
-    """Log access attempt from device"""
+# ================== STUDENT API ENDPOINTS ==================
+
+@app.route('/api/student/submit_request', methods=['POST'])
+def submit_request():
+    """Student submits room access request"""
     try:
         data = request.get_json()
-        rfid_uid = data.get('rfid_uid', '').upper()
-        access_granted = data.get('access_granted', False)
-        device_id = data.get('device_id', '')
-        device_ip = data.get('device_ip', request.remote_addr)
+        uid = data.get('uid', '').upper().strip()
+        start_time = data.get('start_time', '').strip()
+        end_time = data.get('end_time', '').strip()
+        room = data.get('room', '').strip()
+        
+        if not all([uid, start_time, end_time, room]):
+            return jsonify({'error': 'All fields are required', 'success': False}), 400
         
         conn = get_db_connection()
+        
+        # Check if user exists
+        user = conn.execute('SELECT * FROM users WHERE rfid_uid = ?', (uid,)).fetchone()
+        if not user:
+            conn.close()
+            return jsonify({'error': 'User not found', 'success': False}), 404
+        
+        # Check if room exists
+        room_check = conn.execute('SELECT * FROM rooms WHERE room = ?', (room,)).fetchone()
+        if not room_check:
+            conn.close()
+            return jsonify({'error': 'Room not found', 'success': False}), 404
+        
+        # Validate time format and logic
+        try:
+            start_dt = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
+            end_dt = datetime.fromisoformat(end_time.replace('Z', '+00:00'))
+            
+            if start_dt >= end_dt:
+                conn.close()
+                return jsonify({'error': 'End time must be after start time', 'success': False}), 400
+            
+            if start_dt < datetime.now():
+                conn.close()
+                return jsonify({'error': 'Start time cannot be in the past', 'success': False}), 400
+                
+        except ValueError:
+            conn.close()
+            return jsonify({'error': 'Invalid time format', 'success': False}), 400
+        
+        # Check for overlapping requests
+        overlapping = conn.execute('''
+            SELECT * FROM requests 
+            WHERE room = ? AND access = TRUE
+            AND (
+                (datetime(start_time) <= datetime(?) AND datetime(end_time) > datetime(?))
+                OR (datetime(start_time) < datetime(?) AND datetime(end_time) >= datetime(?))
+                OR (datetime(start_time) >= datetime(?) AND datetime(end_time) <= datetime(?))
+            )
+        ''', (room, start_time, start_time, end_time, end_time, start_time, end_time)).fetchone()
+        
+        if overlapping:
+            conn.close()
+            return jsonify({'error': 'Room is already booked for this time period', 'success': False}), 400
+        
+        # Insert request
         conn.execute('''
-            INSERT INTO access_logs (rfid_uid, access_granted, device_id, device_ip, notes)
+            INSERT INTO requests (uid, name, start_time, end_time, room)
             VALUES (?, ?, ?, ?, ?)
-        ''', (rfid_uid, access_granted, device_id, device_ip, 'Logged from device'))
+        ''', (uid, user['name'], start_time, end_time, room))
         
         conn.commit()
         conn.close()
         
-        return jsonify({'success': True, 'message': 'Access logged successfully'})
+        return jsonify({
+            'success': True,
+            'message': 'Request submitted successfully',
+            'request_details': {
+                'uid': uid,
+                'name': user['name'],
+                'start_time': start_time,
+                'end_time': end_time,
+                'room': room
+            }
+        })
         
     except Exception as e:
         return jsonify({'error': str(e), 'success': False}), 500
 
-@app.route('/api/users', methods=['GET', 'POST'])
-def users():
+@app.route('/api/student/my_requests/<uid>', methods=['GET'])
+def get_student_requests(uid):
+    """Get all requests for a specific student"""
+    try:
+        uid = uid.upper().strip()
+        
+        conn = get_db_connection()
+        requests = conn.execute('''
+            SELECT r.*, u.name FROM requests r
+            JOIN users u ON r.uid = u.rfid_uid
+            WHERE r.uid = ?
+            ORDER BY r.timestamp DESC
+        ''', (uid,)).fetchall()
+        
+        conn.close()
+        
+        requests_list = []
+        for req in requests:
+            requests_list.append({
+                'id': req['id'],
+                'uid': req['uid'],
+                'name': req['name'],
+                'start_time': req['start_time'],
+                'end_time': req['end_time'],
+                'access': bool(req['access']),
+                'room': req['room'],
+                'timestamp': req['timestamp'],
+                'approved_by': req['approved_by'],
+                'approved_at': req['approved_at']
+            })
+        
+        return jsonify({'requests': requests_list})
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+# ================== ADMIN API ENDPOINTS ==================
+
+@app.route('/api/admin/requests', methods=['GET'])
+def get_all_requests():
+    """Get all room access requests"""
+    try:
+        conn = get_db_connection()
+        requests = conn.execute('''
+            SELECT r.*, u.name, u.role FROM requests r
+            JOIN users u ON r.uid = u.rfid_uid
+            ORDER BY r.timestamp DESC
+        ''').fetchall()
+        
+        conn.close()
+        
+        requests_list = []
+        for req in requests:
+            requests_list.append({
+                'id': req['id'],
+                'uid': req['uid'],
+                'name': req['name'],
+                'role': req['role'],
+                'start_time': req['start_time'],
+                'end_time': req['end_time'],
+                'access': bool(req['access']),
+                'room': req['room'],
+                'timestamp': req['timestamp'],
+                'approved_by': req['approved_by'],
+                'approved_at': req['approved_at']
+            })
+        
+        return jsonify({'requests': requests_list})
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/admin/requests/<int:request_id>/approve', methods=['PUT'])
+def approve_request(request_id):
+    """Approve or deny a room access request"""
+    try:
+        data = request.get_json()
+        approve = data.get('approve', False)
+        admin_name = data.get('admin_name', 'Admin')
+        
+        conn = get_db_connection()
+        
+        if approve:
+            conn.execute('''
+                UPDATE requests 
+                SET access = TRUE, approved_by = ?, approved_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            ''', (admin_name, request_id))
+            message = 'Request approved successfully'
+        else:
+            conn.execute('''
+                UPDATE requests 
+                SET access = FALSE, approved_by = ?, approved_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            ''', (admin_name, request_id))
+            message = 'Request denied successfully'
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({'success': True, 'message': message})
+        
+    except Exception as e:
+        return jsonify({'error': str(e), 'success': False}), 500
+
+@app.route('/api/admin/users', methods=['GET', 'POST'])
+def manage_users():
     """Get all users or add new user"""
     if request.method == 'GET':
         try:
@@ -209,11 +468,10 @@ def users():
             for user in users:
                 users_list.append({
                     'id': user['id'],
-                    'name': user['name'],
                     'rfid_uid': user['rfid_uid'],
-                    'has_access': bool(user['has_access']),
-                    'created_at': user['created_at'],
-                    'updated_at': user['updated_at']
+                    'name': user['name'],
+                    'role': user['role'],
+                    'created_at': user['created_at']
                 })
             
             return jsonify({'users': users_list})
@@ -224,12 +482,15 @@ def users():
     elif request.method == 'POST':
         try:
             data = request.get_json()
-            name = data.get('name', '').strip()
             rfid_uid = data.get('rfid_uid', '').upper().strip()
-            has_access = data.get('has_access', True)
+            name = data.get('name', '').strip()
+            role = data.get('role', 'student').strip().lower()
             
-            if not name or not rfid_uid:
-                return jsonify({'error': 'Name and RFID UID are required', 'success': False}), 400
+            if not rfid_uid or not name:
+                return jsonify({'error': 'RFID UID and name are required', 'success': False}), 400
+            
+            if role not in ['student', 'teacher', 'admin']:
+                return jsonify({'error': 'Invalid role', 'success': False}), 400
             
             conn = get_db_connection()
             
@@ -244,9 +505,9 @@ def users():
             
             # Insert new user
             conn.execute('''
-                INSERT INTO users (name, rfid_uid, has_access)
+                INSERT INTO users (rfid_uid, name, role)
                 VALUES (?, ?, ?)
-            ''', (name, rfid_uid, has_access))
+            ''', (rfid_uid, name, role))
             
             conn.commit()
             conn.close()
@@ -256,52 +517,74 @@ def users():
         except Exception as e:
             return jsonify({'error': str(e), 'success': False}), 500
 
-@app.route('/api/users/<int:user_id>', methods=['DELETE'])
-def delete_user(user_id):
-    """Delete a user"""
+@app.route('/api/admin/rooms', methods=['GET'])
+def get_rooms():
+    """Get all registered rooms"""
     try:
         conn = get_db_connection()
-        conn.execute('DELETE FROM users WHERE id = ?', (user_id,))
-        conn.commit()
+        rooms = conn.execute('''
+            SELECT * FROM rooms ORDER BY created_at DESC
+        ''').fetchall()
         conn.close()
         
-        return jsonify({'success': True, 'message': 'User deleted successfully'})
+        rooms_list = []
+        for room in rooms:
+            rooms_list.append({
+                'id': room['id'],
+                'room': room['room'],
+                'mac_address': room['mac_address'],
+                'ip_address': room['ip_address'],
+                'last_seen': room['last_seen'],
+                'status': room['status'],
+                'created_at': room['created_at']
+            })
+        
+        return jsonify({'rooms': rooms_list})
         
     except Exception as e:
-        return jsonify({'error': str(e), 'success': False}), 500
+        return jsonify({'error': str(e)}), 500
 
-@app.route('/api/users/<int:user_id>/access', methods=['PUT'])
-def update_user_access(user_id):
-    """Update user access permission"""
+@app.route('/api/admin/esp32_cache', methods=['GET'])
+def get_esp32_cache():
+    """Get current ESP32 cache status"""
     try:
-        data = request.get_json()
-        has_access = data.get('has_access', True)
-        
         conn = get_db_connection()
-        conn.execute('''
-            UPDATE users 
-            SET has_access = ?, updated_at = CURRENT_TIMESTAMP 
-            WHERE id = ?
-        ''', (has_access, user_id))
-        
-        conn.commit()
+        cache_entries = conn.execute('''
+            SELECT ec.*, r.ip_address, r.status as room_status 
+            FROM esp32_cache ec
+            JOIN rooms r ON ec.room = r.room
+            WHERE datetime(ec.expires_at) >= datetime('now')
+            ORDER BY ec.room, ec.expires_at
+        ''').fetchall()
         conn.close()
         
-        return jsonify({'success': True, 'message': 'Access updated successfully'})
+        cache_list = []
+        for entry in cache_entries:
+            cache_list.append({
+                'id': entry['id'],
+                'room': entry['room'],
+                'rfid_uid': entry['rfid_uid'],
+                'name': entry['name'],
+                'expires_at': entry['expires_at'],
+                'created_at': entry['created_at'],
+                'room_ip': entry['ip_address'],
+                'room_status': entry['room_status']
+            })
+        
+        return jsonify({'cache_entries': cache_list})
         
     except Exception as e:
-        return jsonify({'error': str(e), 'success': False}), 500
+        return jsonify({'error': str(e)}), 500
 
-@app.route('/api/access_logs', methods=['GET'])
-def access_logs():
-    """Get recent access logs"""
+@app.route('/api/admin/access_logs', methods=['GET'])
+def get_access_logs():
+    """Get access logs"""
     try:
-        limit = request.args.get('limit', 50, type=int)
+        limit = request.args.get('limit', 100, type=int)
         
         conn = get_db_connection()
         logs = conn.execute('''
-            SELECT al.*, u.name as user_name
-            FROM access_logs al
+            SELECT al.*, u.name, u.role FROM access_logs al
             LEFT JOIN users u ON al.rfid_uid = u.rfid_uid
             ORDER BY al.timestamp DESC
             LIMIT ?
@@ -313,12 +596,13 @@ def access_logs():
             logs_list.append({
                 'id': log['id'],
                 'rfid_uid': log['rfid_uid'],
-                'user_name': log['user_name'],
+                'room': log['room'],
                 'access_granted': bool(log['access_granted']),
-                'device_id': log['device_id'],
-                'device_ip': log['device_ip'],
+                'access_type': log['access_type'],
                 'timestamp': log['timestamp'],
-                'notes': log['notes']
+                'notes': log['notes'],
+                'user_name': log['name'],
+                'user_role': log['role']
             })
         
         return jsonify({'logs': logs_list})
@@ -326,69 +610,51 @@ def access_logs():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/stats', methods=['GET'])
-def get_stats():
+@app.route('/api/admin/stats', methods=['GET'])
+def get_admin_stats():
     """Get dashboard statistics"""
     try:
         conn = get_db_connection()
         
-        # Total users
-        total_users = conn.execute('SELECT COUNT(*) FROM users').fetchone()[0]
+        # Total users by role
+        stats = {}
+        roles = conn.execute('''
+            SELECT role, COUNT(*) as count FROM users GROUP BY role
+        ''').fetchall()
         
-        # Active users (with access)
-        active_users = conn.execute(
-            'SELECT COUNT(*) FROM users WHERE has_access = 1'
-        ).fetchone()[0]
+        for role in roles:
+            stats[f'total_{role["role"]}s'] = role['count']
+        
+        # Total requests
+        stats['total_requests'] = conn.execute('SELECT COUNT(*) FROM requests').fetchone()[0]
+        
+        # Approved requests
+        stats['approved_requests'] = conn.execute('SELECT COUNT(*) FROM requests WHERE access = TRUE').fetchone()[0]
+        
+        # Pending requests
+        stats['pending_requests'] = conn.execute('SELECT COUNT(*) FROM requests WHERE access = FALSE AND approved_by IS NULL').fetchone()[0]
+        
+        # Total rooms
+        stats['total_rooms'] = conn.execute('SELECT COUNT(*) FROM rooms').fetchone()[0]
+        
+        # Online rooms
+        stats['online_rooms'] = conn.execute('SELECT COUNT(*) FROM rooms WHERE status = "online"').fetchone()[0]
         
         # Today's access attempts
-        today_accesses = conn.execute('''
+        stats['today_access_attempts'] = conn.execute('''
             SELECT COUNT(*) FROM access_logs 
             WHERE date(timestamp) = date('now')
         ''').fetchone()[0]
         
-        # Success rate today
-        today_success = conn.execute('''
-            SELECT COUNT(*) FROM access_logs 
-            WHERE date(timestamp) = date('now') AND access_granted = 1
+        # Current active cache entries
+        stats['active_cache_entries'] = conn.execute('''
+            SELECT COUNT(*) FROM esp32_cache 
+            WHERE datetime(expires_at) >= datetime('now')
         ''').fetchone()[0]
         
-        success_rate = round((today_success / today_accesses * 100) if today_accesses > 0 else 0, 1)
-        
         conn.close()
         
-        return jsonify({
-            'total_users': total_users,
-            'active_users': active_users,
-            'today_accesses': today_accesses,
-            'success_rate': success_rate
-        })
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/rfid', methods=['POST'])
-def rfid_endpoint():
-    """Legacy endpoint for compatibility with existing code"""
-    try:
-        data = request.get_json()
-        rfid_uid = data.get('rfid_uid', '').upper()
-        
-        # Log the RFID scan
-        conn = get_db_connection()
-        conn.execute('''
-            INSERT INTO access_logs (rfid_uid, access_granted, device_id, device_ip, notes)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (rfid_uid, False, data.get('device_info', {}).get('mac_address', ''), 
-              request.remote_addr, 'Legacy endpoint scan'))
-        conn.commit()
-        conn.close()
-        
-        return jsonify({
-            'status': 'received',
-            'message': 'RFID data logged successfully',
-            'rfid_uid': rfid_uid,
-            'timestamp': datetime.now().isoformat()
-        })
+        return jsonify(stats)
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -397,10 +663,11 @@ if __name__ == '__main__':
     # Initialize database
     init_database()
     
-    print("🚀 Starting RFID Access Control Server...")
-    print("📊 Dashboard: http://localhost:5000")
-    print("🔌 API Endpoint: http://localhost:5000/api/")
-    print("💾 Database: rfid_access.db")
+    print("🚀 Starting Room Access Control Server...")
+    print("📊 Admin Dashboard: http://localhost:5000")
+    print("📝 Student Request Page: http://localhost:5000/request")
+    print("🔌 API Endpoints: http://localhost:5000/api/")
+    print("💾 Database: room_access.db")
     
     # Run the Flask application
     app.run(host='0.0.0.0', port=5000, debug=True)
