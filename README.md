@@ -74,6 +74,7 @@ python app.py
    ```cpp
    const char* ssid = "YOUR_WIFI_NAME";
    const char* password = "YOUR_WIFI_PASSWORD";
+   const char* room = "YOUR_ROOM";
    ```
 5. Update server IP address:
    ```cpp
