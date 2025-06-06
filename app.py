@@ -8,7 +8,6 @@ app = Flask(__name__)
 
 # Database configuration
 DATABASE = 'room_access.db'
-#commit to push
 
 def init_database():
     """Initialize the SQLite database with required tables"""
@@ -154,67 +153,99 @@ def register_esp32():
         return jsonify({'error': str(e), 'success': False}), 500
 
 @app.route('/api/esp32/check_access', methods=['POST'])
-def check_access():
-    """Check if RFID card has access to room at current time"""
+def check_esp32_access():
+    """ESP32 checks if RFID card has access to room"""
     try:
         data = request.get_json()
-        rfid_uid = data.get('rfid_uid', '').upper()
-        device_mac = data.get('device_mac', '')
-        room = data.get('room', '')
+        rfid_uid = data.get('rfid_uid', '').upper().strip()
+        room = data.get('room', '').strip()
+        mac_address = data.get('mac_address', '').strip()
+        
+        if not rfid_uid or not room:
+            return jsonify({'error': 'RFID UID and room are required', 'access_granted': False}), 400
         
         conn = get_db_connection()
         
-        # Get current time
+        # Update room status
+        conn.execute('''
+            UPDATE rooms SET last_seen = CURRENT_TIMESTAMP, status = 'online'
+            WHERE room = ? OR mac_address = ?
+        ''', (room, mac_address))
+        
+        # Check if there's a valid request for this user and room
         current_time = datetime.now()
         
-        # Check if user has an active request for this room
-        active_request = conn.execute('''
-            SELECT r.*, u.name as user_name 
-            FROM request_table r
-            JOIN user_table u ON r.uid = u.rfid_uid
-            WHERE r.uid = ? AND r.room = ? AND r.access = TRUE
-            AND r.start_time <= ? AND r.end_time >= ?
-            AND r.status = 'approved'
-            ORDER BY r.start_time DESC
-            LIMIT 1
-        ''', (rfid_uid, room, current_time, current_time)).fetchone()
+        # First check if user exists
+        user = conn.execute('''
+            SELECT * FROM users WHERE rfid_uid = ?
+        ''', (rfid_uid,)).fetchone()
         
-        if active_request:
+        if not user:
+            # Log access attempt
+            conn.execute('''
+                INSERT INTO access_logs (rfid_uid, room, access_granted, access_type, notes)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (rfid_uid, room, False, 'denied', 'Unknown user'))
+            conn.commit()
+            conn.close()
+            
+            return jsonify({
+                'access_granted': False,
+                'user_name': None,
+                'message': 'Unknown RFID card',
+                'cache_user': False
+            })
+        
+        # Check for valid request
+        valid_request = conn.execute('''
+            SELECT r.*, u.name FROM requests r
+            JOIN users u ON r.uid = u.rfid_uid
+            WHERE r.uid = ? AND r.room = ? AND r.access = TRUE
+            AND datetime(r.start_time) <= datetime('now')
+            AND datetime(r.end_time) >= datetime('now')
+            ORDER BY r.created_at DESC
+            LIMIT 1
+        ''', (rfid_uid, room)).fetchone()
+        
+        if valid_request:
+            # Grant access and add to ESP32 cache
+            conn.execute('''
+                INSERT OR REPLACE INTO esp32_cache (room, rfid_uid, name, expires_at)
+                VALUES (?, ?, ?, ?)
+            ''', (room, rfid_uid, user['name'], valid_request['end_time']))
+            
             # Log successful access
             conn.execute('''
-                INSERT INTO access_logs (rfid_uid, room, access_granted, device_mac, device_ip, request_id, notes)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (rfid_uid, room, True, device_mac, request.remote_addr, active_request['id'], 'Valid room request'))
-            conn.commit()
+                INSERT INTO access_logs (rfid_uid, room, access_granted, access_type, notes)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (rfid_uid, room, True, 'database', f'Request approved, cached until {valid_request["end_time"]}'))
             
-            response = {
+            conn.commit()
+            conn.close()
+            
+            return jsonify({
                 'access_granted': True,
-                'user_name': active_request['user_name'],
-                'request_id': active_request['id'],
-                'end_time': active_request['end_time'],
-                'message': f"Access granted for {active_request['user_name']} until {active_request['end_time']}"
-            }
+                'user_name': user['name'],
+                'message': f'Access granted for {user["name"]}',
+                'cache_user': True,
+                'expires_at': valid_request['end_time']
+            })
         else:
-            # Check if user exists
-            user = conn.execute('SELECT * FROM user_table WHERE rfid_uid = ?', (rfid_uid,)).fetchone()
-            
-            # Log failed access attempt
+            # Log denied access
             conn.execute('''
-                INSERT INTO access_logs (rfid_uid, room, access_granted, device_mac, device_ip, notes)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ''', (rfid_uid, room, False, device_mac, request.remote_addr, 
-                  'No active room request' if user else 'Unknown card'))
-            conn.commit()
+                INSERT INTO access_logs (rfid_uid, room, access_granted, access_type, notes)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (rfid_uid, room, False, 'denied', 'No valid request found'))
             
-            response = {
+            conn.commit()
+            conn.close()
+            
+            return jsonify({
                 'access_granted': False,
-                'user_name': user['name'] if user else None,
-                'request_id': None,
-                'message': 'No active room request found' if user else 'Unknown RFID card'
-            }
-        
-        conn.close()
-        return jsonify(response)
+                'user_name': user['name'],
+                'message': f'No valid request found for {user["name"]} in room {room}',
+                'cache_user': False
+            })
         
     except Exception as e:
         return jsonify({'error': str(e), 'access_granted': False}), 500
@@ -271,18 +302,20 @@ def submit_request():
     """Student submits room access request"""
     try:
         data = request.get_json()
-        uid = data.get('uid', '').upper().strip()
+        name = data.get('name', '').strip()
+        start_date = data.get('start_date', '').strip()
         start_time = data.get('start_time', '').strip()
+        end_date = data.get('end_date', '').strip()
         end_time = data.get('end_time', '').strip()
         room = data.get('room', '').strip()
         
-        if not all([uid, start_time, end_time, room]):
+        if not all([name, start_date, start_time, end_date, end_time, room]):
             return jsonify({'error': 'All fields are required', 'success': False}), 400
         
         conn = get_db_connection()
         
-        # Check if user exists
-        user = conn.execute('SELECT * FROM users WHERE rfid_uid = ?', (uid,)).fetchone()
+        # Find user by name
+        user = conn.execute('SELECT * FROM users WHERE name = ?', (name,)).fetchone()
         if not user:
             conn.close()
             return jsonify({'error': 'User not found', 'success': False}), 404
@@ -293,22 +326,32 @@ def submit_request():
             conn.close()
             return jsonify({'error': 'Room not found', 'success': False}), 404
         
-        # Validate time format and logic
+        # Parse and validate time format
         try:
-            start_dt = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
-            end_dt = datetime.fromisoformat(end_time.replace('Z', '+00:00'))
+            # Combine date and time to create datetime objects
+            start_datetime_str = f"{start_date} {start_time}:00"
+            end_datetime_str = f"{end_date} {end_time}:00"
+            
+            start_dt = datetime.strptime(start_datetime_str, '%Y-%m-%d %H:%M:%S')
+            end_dt = datetime.strptime(end_datetime_str, '%Y-%m-%d %H:%M:%S')
             
             if start_dt >= end_dt:
                 conn.close()
                 return jsonify({'error': 'End time must be after start time', 'success': False}), 400
             
-            if start_dt < datetime.now():
+            # Compare with current time (both are now naive datetime objects)
+            current_time = datetime.now()
+            if start_dt < current_time:
                 conn.close()
                 return jsonify({'error': 'Start time cannot be in the past', 'success': False}), 400
                 
-        except ValueError:
+        except ValueError as ve:
             conn.close()
-            return jsonify({'error': 'Invalid time format', 'success': False}), 400
+            return jsonify({'error': f'Invalid time format: {str(ve)}', 'success': False}), 400
+        
+        # Convert to ISO format for database storage
+        start_time_iso = start_dt.isoformat()
+        end_time_iso = end_dt.isoformat()
         
         # Check for overlapping requests
         overlapping = conn.execute('''
@@ -319,7 +362,7 @@ def submit_request():
                 OR (datetime(start_time) < datetime(?) AND datetime(end_time) >= datetime(?))
                 OR (datetime(start_time) >= datetime(?) AND datetime(end_time) <= datetime(?))
             )
-        ''', (room, start_time, start_time, end_time, end_time, start_time, end_time)).fetchone()
+        ''', (room, start_time_iso, start_time_iso, end_time_iso, end_time_iso, start_time_iso, end_time_iso)).fetchone()
         
         if overlapping:
             conn.close()
@@ -329,7 +372,7 @@ def submit_request():
         conn.execute('''
             INSERT INTO requests (uid, name, start_time, end_time, room)
             VALUES (?, ?, ?, ?, ?)
-        ''', (uid, user['name'], start_time, end_time, room))
+        ''', (user['rfid_uid'], user['name'], start_time_iso, end_time_iso, room))
         
         conn.commit()
         conn.close()
@@ -338,10 +381,9 @@ def submit_request():
             'success': True,
             'message': 'Request submitted successfully',
             'request_details': {
-                'uid': uid,
                 'name': user['name'],
-                'start_time': start_time,
-                'end_time': end_time,
+                'start_time': start_time_iso,
+                'end_time': end_time_iso,
                 'room': room
             }
         })
@@ -349,19 +391,19 @@ def submit_request():
     except Exception as e:
         return jsonify({'error': str(e), 'success': False}), 500
 
-@app.route('/api/student/my_requests/<uid>', methods=['GET'])
-def get_student_requests(uid):
-    """Get all requests for a specific student"""
+@app.route('/api/student/my_requests/<name>', methods=['GET'])
+def get_student_requests(name):
+    """Get all requests for a specific student by name"""
     try:
-        uid = uid.upper().strip()
+        name = name.strip()
         
         conn = get_db_connection()
         requests = conn.execute('''
             SELECT r.*, u.name FROM requests r
             JOIN users u ON r.uid = u.rfid_uid
-            WHERE r.uid = ?
+            WHERE u.name = ?
             ORDER BY r.timestamp DESC
-        ''', (uid,)).fetchall()
+        ''', (name,)).fetchall()
         
         conn.close()
         
