@@ -8,6 +8,7 @@ app = Flask(__name__)
 
 # Database configuration
 DATABASE = 'room_access.db'
+#commit to push
 
 def init_database():
     """Initialize the SQLite database with required tables"""
