@@ -156,6 +156,182 @@ def register_esp32():
 def check_esp32_access():
     """ESP32 checks if RFID card has access to room"""
     try:
+        # Get JSON data from request
+        data = request.get_json()
+        if not data:
+            return jsonify({
+                'error': 'No JSON data provided', 
+                'access_granted': False,
+                'success': False
+            }), 400
+        
+        # Extract and validate input parameters
+        rfid_uid = data.get('rfid_uid', '').upper().strip()
+        room = data.get('room', '').strip()
+        mac_address = data.get('mac_address', '').strip()
+        
+        # Validate required fields
+        if not rfid_uid:
+            return jsonify({
+                'error': 'RFID UID is required', 
+                'access_granted': False,
+                'success': False
+            }), 400
+            
+        if not room:
+            return jsonify({
+                'error': 'Room name is required', 
+                'access_granted': False,
+                'success': False
+            }), 400
+        
+        print(f"[DEBUG] Checking access for RFID: {rfid_uid}, Room: {room}")
+        
+        conn = get_db_connection()
+        
+        # Update room status and last seen timestamp
+        if mac_address:
+            room_update = conn.execute('''
+                UPDATE rooms SET last_seen = CURRENT_TIMESTAMP, status = 'online'
+                WHERE room = ? OR mac_address = ?
+            ''', (room, mac_address))
+            print(f"[DEBUG] Updated room status for {room}, rows affected: {room_update.rowcount}")
+        
+        # Check if user exists in the database
+        user = conn.execute('''
+            SELECT id, rfid_uid, name, role FROM users WHERE rfid_uid = ?
+        ''', (rfid_uid,)).fetchone()
+        
+        if not user:
+            print(f"[DEBUG] Unknown RFID card: {rfid_uid}")
+            # Log the failed access attempt
+            conn.execute('''
+                INSERT INTO access_logs (rfid_uid, room, access_granted, access_type, notes)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (rfid_uid, room, False, 'denied', 'Unknown RFID card'))
+            conn.commit()
+            conn.close()
+            
+            return jsonify({
+                'access_granted': False,
+                'user_name': None,
+                'message': 'Unknown RFID card',
+                'cache_user': False,
+                'success': True,
+                'debug_info': f'RFID {rfid_uid} not found in users table'
+            })
+        
+        print(f"[DEBUG] Found user: {user['name']} ({user['role']})")
+        
+        # Get current timestamp in the same format as database
+        current_timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        print(f"[DEBUG] Current time: {current_timestamp}")
+        
+        # Check for valid, approved request for this user and room
+        # Using proper datetime comparison with explicit format
+        valid_request = conn.execute('''
+            SELECT r.id, r.uid, r.start_time, r.end_time, r.room, r.access, 
+                   r.approved_by, r.approved_at, u.name
+            FROM requests r
+            JOIN users u ON r.uid = u.rfid_uid
+            WHERE r.uid = ? 
+            AND r.room = ? 
+            AND r.access = 1
+            AND datetime(r.start_time) <= datetime(?)
+            AND datetime(r.end_time) >= datetime(?)
+            ORDER BY r.timestamp DESC
+            LIMIT 1
+        ''', (rfid_uid, room, current_timestamp, current_timestamp)).fetchone()
+        
+        if valid_request:
+            print(f"[DEBUG] Valid request found: ID {valid_request['id']}, expires at {valid_request['end_time']}")
+            
+            # Grant access and update/add to ESP32 cache
+            conn.execute('''
+                INSERT OR REPLACE INTO esp32_cache (room, rfid_uid, name, expires_at)
+                VALUES (?, ?, ?, ?)
+            ''', (room, rfid_uid, user['name'], valid_request['end_time']))
+            
+            # Log successful access
+            conn.execute('''
+                INSERT INTO access_logs (rfid_uid, room, access_granted, access_type, notes)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (rfid_uid, room, True, 'database', 
+                  f'Valid request found (ID: {valid_request["id"]}), cached until {valid_request["end_time"]}'))
+            
+            conn.commit()
+            conn.close()
+            
+            return jsonify({
+                'access_granted': True,
+                'user_name': user['name'],
+                'user_role': user['role'],
+                'message': f'Access granted for {user["name"]}',
+                'cache_user': True,
+                'expires_at': valid_request['end_time'],
+                'success': True,
+                'request_id': valid_request['id'],
+                'debug_info': f'Request valid from {valid_request["start_time"]} to {valid_request["end_time"]}'
+            })
+        else:
+            print(f"[DEBUG] No valid request found for {user['name']} in room {room}")
+            
+            # Check if there are any requests for this user/room (for debugging)
+            debug_requests = conn.execute('''
+                SELECT id, start_time, end_time, access, approved_by
+                FROM requests 
+                WHERE uid = ? AND room = ?
+                ORDER BY timestamp DESC
+                LIMIT 3
+            ''', (rfid_uid, room)).fetchall()
+            
+            debug_info = f"Found {len(debug_requests)} total requests for this user/room. "
+            if debug_requests:
+                for req in debug_requests:
+                    debug_info += f"ID:{req['id']} ({req['start_time']} to {req['end_time']}, approved:{req['access']}) "
+            else:
+                debug_info += "No requests found at all."
+            
+            print(f"[DEBUG] {debug_info}")
+            
+            # Log denied access
+            conn.execute('''
+                INSERT INTO access_logs (rfid_uid, room, access_granted, access_type, notes)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (rfid_uid, room, False, 'denied', 'No valid request found'))
+            
+            conn.commit()
+            conn.close()
+            
+            return jsonify({
+                'access_granted': False,
+                'user_name': user['name'],
+                'user_role': user['role'],
+                'message': f'No valid request found for {user["name"]} in room {room}',
+                'cache_user': False,
+                'success': True,
+                'debug_info': debug_info
+            })
+        
+    except sqlite3.Error as db_error:
+        print(f"[ERROR] Database error: {str(db_error)}")
+        return jsonify({
+            'error': f'Database error: {str(db_error)}', 
+            'access_granted': False,
+            'success': False
+        }), 500
+        
+    except Exception as e:
+        print(f"[ERROR] Unexpected error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'error': f'Server error: {str(e)}', 
+            'access_granted': False,
+            'success': False
+        }), 500
+    """ESP32 checks if RFID card has access to room"""
+    try:
         data = request.get_json()
         rfid_uid = data.get('rfid_uid', '').upper().strip()
         room = data.get('room', '').strip()
