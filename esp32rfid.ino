@@ -337,7 +337,7 @@ bool checkServerReservation(String uid) {
         if (cacheUser && !expiresAt.isEmpty()) {
           // Calculate duration (simplified - you might want better time parsing)
           unsigned long durationMinutes = 60; // Default 1 hour
-          addTempUser(uid, userName, durationMinutes * 60 * 1000);
+          addTempUser(uid, userName, durationMinutes * 1000);
         }
         
         serverConnected = true;
