@@ -192,7 +192,7 @@
                 <label for="room">Room</label>
                 <select id="room" name="room" required>
                     <option value="">Select a room</option>
-                    <option value="EN4401">EN4401</option>
+                    <option value="EN4401">EN4401 (Network Laboratory)</option>
                     <option value="Room102">Room 102</option>
                     <option value="Room103">Room 103</option>
                     <option value="Room201">Room 201</option>
@@ -260,13 +260,13 @@
                 
                 // Check if start time is in the past
                 if (start < now) {
-                    showAlert('Start time cannot be in the past');
+                    showAlert('เวลาเริ่มต้นต้องไม่อยู่ในอดีต', 'error');
                     return false;
                 }
                 
                 // Check if end time is after start time
                 if (end <= start) {
-                    showAlert('End time must be after start time');
+                    showAlert('เวลาสิ้นสุดต้องหลังเวลาเริ่มต้น', 'error');
                     return false;
                 }
             }
@@ -314,7 +314,7 @@
             const name = document.getElementById('name').value.trim();
             
             if (!name) {
-                showAlert('Please enter your name first');
+                showAlert('กรุณากรอกชื่อของคุณก่อน', 'error');
                 return;
             }
 

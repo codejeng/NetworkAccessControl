@@ -1,13 +1,16 @@
 from flask import Flask, request, jsonify, render_template
 import sqlite3
-import json
-from datetime import datetime, timedelta
-import os
+from datetime import datetime
+import logging
 
 app = Flask(__name__)
 
 # Database configuration
 DATABASE = 'room_access.db'
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 def init_database():
     """Initialize the SQLite database with required tables"""
@@ -494,13 +497,13 @@ def submit_request():
         user = conn.execute('SELECT * FROM users WHERE name = ?', (name,)).fetchone()
         if not user:
             conn.close()
-            return jsonify({'error': 'User not found', 'success': False}), 404
+            return jsonify({'error': 'ไม่พบชื่อผู้ใช้งาน', 'success': False}), 404
         
         # Check if room exists
         room_check = conn.execute('SELECT * FROM rooms WHERE room = ?', (room,)).fetchone()
         if not room_check:
             conn.close()
-            return jsonify({'error': 'Room not found', 'success': False}), 404
+            return jsonify({'error': 'ไม่พบห้องที่ท่านได้เลือกไว้', 'success': False}), 404
         
         # Parse and validate time format
         try:
@@ -513,13 +516,13 @@ def submit_request():
             
             if start_dt >= end_dt:
                 conn.close()
-                return jsonify({'error': 'End time must be after start time', 'success': False}), 400
+                return jsonify({'error': 'เวลาจองสิ้นสุดต้องอยู่ก่อนเวลาจองเริ่มต้น', 'success': False}), 400
             
             # Compare with current time (both are now naive datetime objects)
             current_time = datetime.now()
             if start_dt < current_time:
                 conn.close()
-                return jsonify({'error': 'Start time cannot be in the past', 'success': False}), 400
+                return jsonify({'error': 'เวลาจองเริ่มต้นไม่สามารถเป็นอดีตได้', 'success': False}), 400
                 
         except ValueError as ve:
             conn.close()
@@ -877,6 +880,89 @@ def get_admin_stats():
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+@app.route('/api/admin/requests/clear', methods=['DELETE'])
+def clear_all_requests():
+    # Clear all room access requests from the database
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # Get count of requests before deletion for logging
+        cursor.execute("SELECT COUNT(*) FROM requests")
+        request_count = cursor.fetchone()[0]
+
+        # Delete all request
+        cursor.execute("DELETE FROM requests")
+
+        logger.info(f"Admin cleared {request_count} room access requests at {datetime.now()}")
+
+        conn.commit()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'message': f'Succesfully cleared {request_count} room access requests',
+            'cleared_count': request_count
+        }), 200
+        
+    except sqlite3.Error as e:
+        logger.error(f"Database error while clearing requests: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': f'Database error {str(e)}'
+        }), 500
+    except Exception as e:
+        logger.error(f"Unexpected error while clearing requests: {str(e)}")
+        return jsonify({
+            'success': False,
+            'erorr': f'Unexpected error: {str(e)}'
+        }), 500
+
+@app.route('/api/admin/esp32_cache/clear', methods=['DELETE'])
+def clear_esp32_cache():
+    """Clear all ESP32 cache entries from the database"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Get count of cache entries before deletion for logging
+        cursor.execute("SELECT COUNT(*) FROM esp32_cache")
+        cache_count = cursor.fetchone()[0]
+        
+        # Delete all cache entries
+        cursor.execute("DELETE FROM esp32_cache")
+        
+        # Log the operation
+        logger.info(f"Admin cleared {cache_count} ESP32 cache entries at {datetime.now()}")
+        
+        conn.commit()
+        conn.close()
+        
+        # Optionally, you might want to notify all ESP32 devices to refresh their cache
+        # This could be done through a separate notification system or websockets
+        
+        return jsonify({
+            'success': True,
+            'message': f'Successfully cleared {cache_count} ESP32 cache entries',
+            'cleared_count': cache_count,
+            'warning': 'ESP32 devices will need to refresh their cache for access control to work properly'
+        }), 200
+        
+    except sqlite3.Error as e:
+        logger.error(f"Database error while clearing ESP32 cache: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': f'Database error: {str(e)}'
+        }), 500
+        
+    except Exception as e:
+        logger.error(f"Unexpected error while clearing ESP32 cache: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': f'Unexpected error: {str(e)}'
+        }), 500
 
 if __name__ == '__main__':
     # Initialize database
