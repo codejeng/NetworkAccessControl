@@ -513,7 +513,7 @@
                   <th>User</th>
                   <th>RFID UID</th>
                   <th>Expires At</th>
-                  <th>Room Status</th>
+                  <th>Status</th>
                 </tr>
               </thead>
               <tbody id="cacheTableBody"></tbody>
@@ -769,7 +769,7 @@
             data.cache_entries.forEach((entry) => {
               const row = document.createElement("tr");
               const statusClass =
-                entry.room_status === "online"
+                entry.expired_status === "online"
                   ? "status-online"
                   : "status-offline";
 
@@ -783,7 +783,7 @@
                             <td>${entry.name}</td>
                             <td><code>${entry.rfid_uid}</code></td>
                             <td>${formatDateTime(entry.expires_at)}</td>
-                            <td><span class="${statusClass}">${entry.room_status.toUpperCase()}</span></td>
+                            <td><span class="${statusClass}">${entry.expired_status.toUpperCase()}</span></td>
                         `;
               tableBody.appendChild(row);
             });
@@ -1005,14 +1005,14 @@
             const data = await response.json();
 
             if (response.ok) {
-                showAlert('requestsAlert', data.message || 'All requests cleared successfully', 'success');
+                showAlert('cacheAlert', data.message || 'All requests cleared successfully', 'success');
                 await loadRequests();
                 await loadStats();
             } else {
-                showAlert('requestsAlert', 'Error clearing requests: ' + erorr.message, 'danger');
+                showAlert('cacheAlert', 'Error clearing requests: ' + erorr.message, 'danger');
             }
         } catch (error) {
-            showAlert('requestsAlert', 'Erorr clearing requests: ', error.mesage, 'danger');
+            showAlert('cacheAlert', 'Erorr clearing requests: ', error.mesage, 'danger');
         }
       }
     

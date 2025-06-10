@@ -79,6 +79,7 @@ def init_database():
             rfid_uid TEXT NOT NULL,
             name TEXT NOT NULL,
             expires_at TIMESTAMP NOT NULL,
+            expired_status TEXT NOT NULL DEFAULT 'online',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (room) REFERENCES rooms(room)
         )
@@ -108,6 +109,62 @@ def get_db_connection():
     conn = sqlite3.connect(DATABASE)
     conn.row_factory = sqlite3.Row
     return conn
+
+def get_cache_with_expired_status():
+    """Helper function to get cache entries with expired_status field"""
+    try:
+        conn = get_db_connection()
+        
+        # Get all cache entries
+        cache_entries = conn.execute('''
+            SELECT ec.*, r.ip_address, r.status as room_status
+            FROM esp32_cache ec
+            JOIN rooms r ON ec.room = r.room
+            ORDER BY ec.room, ec.expires_at
+        ''').fetchall()
+        
+        cache_list = []
+        
+        for entry in cache_entries:
+            # Get current time as datetime object
+            current_time = datetime.now()
+            
+            # Parse end_time to datetime object (handle different formats)
+            end_time_str = entry['expires_at']
+            try:
+                # Try ISO format first (2025-06-10T14:50:00)
+                if 'T' in end_time_str:
+                    end_time = datetime.fromisoformat(end_time_str.replace('T', ' '))
+                else:
+                    # Standard format (2025-06-10 14:50:00)
+                    end_time = datetime.strptime(end_time_str, '%Y-%m-%d %H:%M:%S')
+            except ValueError:
+                # Fallback: assume it's expired if we can't parse
+                end_time = datetime.min
+            
+            # Set expired_status based on condition
+            # if current time > end time -> true {expired_status = 'offline'}
+            # -> false {expired_status = 'online'}
+            expired_status = 'offline' if current_time > end_time else 'online'
+            
+            cache_list.append({
+                'id': entry['id'],
+                'room': entry['room'],
+                'rfid_uid': entry['rfid_uid'],
+                'name': entry['name'],
+                'expires_at': entry['expires_at'],
+                'created_at': entry['created_at'],
+                'room_ip': entry['ip_address'],
+                'room_status': entry['room_status'],
+                'expired_status': expired_status  # Default 'online', 'offline' if expired
+            })
+        
+        conn.close()
+        return cache_list
+        
+    except Exception as e:
+        logger.error(f"Error in get_cache_with_expired_status: {str(e)}")
+        return []
 
 @app.route('/')
 def dashboard():
@@ -333,100 +390,6 @@ def check_esp32_access():
             'access_granted': False,
             'success': False
         }), 500
-    """ESP32 checks if RFID card has access to room"""
-    try:
-        data = request.get_json()
-        rfid_uid = data.get('rfid_uid', '').upper().strip()
-        room = data.get('room', '').strip()
-        mac_address = data.get('mac_address', '').strip()
-        
-        if not rfid_uid or not room:
-            return jsonify({'error': 'RFID UID and room are required', 'access_granted': False}), 400
-        
-        conn = get_db_connection()
-        
-        # Update room status
-        conn.execute('''
-            UPDATE rooms SET last_seen = CURRENT_TIMESTAMP, status = 'online'
-            WHERE room = ? OR mac_address = ?
-        ''', (room, mac_address))
-        
-        # Check if there's a valid request for this user and room
-        current_time = datetime.now()
-        
-        # First check if user exists
-        user = conn.execute('''
-            SELECT * FROM users WHERE rfid_uid = ?
-        ''', (rfid_uid,)).fetchone()
-        
-        if not user:
-            # Log access attempt
-            conn.execute('''
-                INSERT INTO access_logs (rfid_uid, room, access_granted, access_type, notes)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (rfid_uid, room, False, 'denied', 'Unknown user'))
-            conn.commit()
-            conn.close()
-            
-            return jsonify({
-                'access_granted': False,
-                'user_name': None,
-                'message': 'Unknown RFID card',
-                'cache_user': False
-            })
-        
-        # Check for valid request
-        valid_request = conn.execute('''
-            SELECT r.*, u.name FROM requests r
-            JOIN users u ON r.uid = u.rfid_uid
-            WHERE r.uid = ? AND r.room = ? AND r.access = TRUE
-            AND datetime(r.start_time) <= datetime('now')
-            AND datetime(r.end_time) >= datetime('now')
-            ORDER BY r.created_at DESC
-            LIMIT 1
-        ''', (rfid_uid, room)).fetchone()
-        
-        if valid_request:
-            # Grant access and add to ESP32 cache
-            conn.execute('''
-                INSERT OR REPLACE INTO esp32_cache (room, rfid_uid, name, expires_at)
-                VALUES (?, ?, ?, ?)
-            ''', (room, rfid_uid, user['name'], valid_request['end_time']))
-            
-            # Log successful access
-            conn.execute('''
-                INSERT INTO access_logs (rfid_uid, room, access_granted, access_type, notes)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (rfid_uid, room, True, 'database', f'Request approved, cached until {valid_request["end_time"]}'))
-            
-            conn.commit()
-            conn.close()
-            
-            return jsonify({
-                'access_granted': True,
-                'user_name': user['name'],
-                'message': f'Access granted for {user["name"]}',
-                'cache_user': True,
-                'expires_at': valid_request['end_time']
-            })
-        else:
-            # Log denied access
-            conn.execute('''
-                INSERT INTO access_logs (rfid_uid, room, access_granted, access_type, notes)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (rfid_uid, room, False, 'denied', 'No valid request found'))
-            
-            conn.commit()
-            conn.close()
-            
-            return jsonify({
-                'access_granted': False,
-                'user_name': user['name'],
-                'message': f'No valid request found for {user["name"]} in room {room}',
-                'cache_user': False
-            })
-        
-    except Exception as e:
         return jsonify({'error': str(e), 'access_granted': False}), 500
 
 @app.route('/api/esp32/cleanup_cache', methods=['POST'])
@@ -767,21 +730,42 @@ def get_rooms():
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/admin/esp32_cache', methods=['GET'])
-def get_esp32_cache():
-    """Get current ESP32 cache status"""
+def get_esp32_cache_updated():
+    """Get current ESP32 cache status with expired_status field"""
     try:
         conn = get_db_connection()
+        
+        # Get all cache entries
         cache_entries = conn.execute('''
             SELECT ec.*, r.ip_address, r.status as room_status 
             FROM esp32_cache ec
             JOIN rooms r ON ec.room = r.room
-            WHERE datetime(ec.expires_at) >= datetime('now')
             ORDER BY ec.room, ec.expires_at
         ''').fetchall()
+        
         conn.close()
         
         cache_list = []
         for entry in cache_entries:
+            # Get current time as datetime object
+            current_time = datetime.now()
+            
+            # Parse end_time to datetime object (handle different formats)
+            end_time_str = entry['expires_at']
+            try:
+                # Try ISO format first (2025-06-10T14:50:00)
+                if 'T' in end_time_str:
+                    end_time = datetime.fromisoformat(end_time_str.replace('T', ' '))
+                else:
+                    # Standard format (2025-06-10 14:50:00)
+                    end_time = datetime.strptime(end_time_str, '%Y-%m-%d %H:%M:%S')
+            except ValueError:
+                # Fallback: assume it's expired if we can't parse
+                end_time = datetime.min
+            
+            # Set expired_status: 'offline' if expired, 'online' if not expired
+            expired_status = 'offline' if current_time > end_time else 'online'
+            
             cache_list.append({
                 'id': entry['id'],
                 'room': entry['room'],
@@ -790,13 +774,17 @@ def get_esp32_cache():
                 'expires_at': entry['expires_at'],
                 'created_at': entry['created_at'],
                 'room_ip': entry['ip_address'],
-                'room_status': entry['room_status']
+                'room_status': entry['room_status'],
+                'expired_status': expired_status  # New field with default 'online'
             })
         
-        return jsonify({'cache_entries': cache_list})
+        return jsonify({
+            'cache_entries': cache_list
+        })
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
 
 @app.route('/api/admin/access_logs', methods=['GET'])
 def get_access_logs():
@@ -963,6 +951,71 @@ def clear_esp32_cache():
             'success': False,
             'error': f'Unexpected error: {str(e)}'
         }), 500
+
+@app.route('/api/admin/esp32_cache_with_status_update', methods=['GET'])
+def get_esp32_cache_with_status_update():
+    """Get ESP32 cache and update room status for expired entries"""
+    try:
+        conn = get_db_connection()
+        
+        # Step 1: Get all cache entries with room information
+        cache_entries = conn.execute('''
+            SELECT ec.*, r.ip_address, r.status as room_status, r.id as room_id
+            FROM esp32_cache ec
+            JOIN rooms r ON ec.room = r.room
+            ORDER BY ec.room, ec.expires_at
+        ''').fetchall()
+        
+        cache_list = []
+        
+        # Step 2: Check each entry and set expired_status
+        for entry in cache_entries:
+            # Get current time as datetime object
+            current_time = datetime.now()
+            
+            # Parse end_time to datetime object (handle ISO format)
+            end_time_str = entry['expires_at']
+            try:
+                # Try ISO format first (2025-06-10T14:50:00)
+                if 'T' in end_time_str:
+                    end_time = datetime.fromisoformat(end_time_str.replace('T', ' '))
+                else:
+                    # Standard format (2025-06-10 14:50:00)
+                    end_time = datetime.strptime(end_time_str, '%Y-%m-%d %H:%M:%S')
+            except ValueError:
+                # Fallback: assume it's expired if we can't parse
+                end_time = datetime.min
+            
+            # Check if current time > end time
+            if current_time > end_time:
+                expired_status = 'offline'  # true condition
+            else:
+                expired_status = 'online'   # false condition
+            
+            # Add to cache list with expired_status
+            cache_list.append({
+                'id': entry['id'],
+                'room': entry['room'],
+                'rfid_uid': entry['rfid_uid'],
+                'name': entry['name'],
+                'expires_at': entry['expires_at'],
+                'created_at': entry['created_at'],
+                'room_ip': entry['ip_address'],
+                'room_status': entry['room_status'],
+                'expired_status': expired_status
+            })
+        
+        conn.close()
+        
+        return jsonify({
+            'cache_entries': cache_list,
+            'message': f'Retrieved {len(cache_list)} cache entries with expiration status'
+        })
+        
+    except Exception as e:
+        logger.error(f"Error in get_esp32_cache_with_status_update: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
 
 if __name__ == '__main__':
     # Initialize database
