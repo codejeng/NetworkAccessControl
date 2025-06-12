@@ -55,6 +55,7 @@ def init_database():
             room TEXT UNIQUE NOT NULL,
             mac_address TEXT UNIQUE NOT NULL,
             ip_address TEXT,
+            auto_approve BOOLEAN NOT NULL DEFAULT 0,
             last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             status TEXT DEFAULT 'offline',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -634,12 +635,26 @@ def submit_request():
         # Convert to ISO format for database storage
         start_time_iso = start_dt.isoformat()
         end_time_iso = end_dt.isoformat()
+
+        # Check auto approve_request room 
+        auto_approve = conn.execute('''
+                    SELECT auto_approve
+                    FROM rooms
+                    WHERE room = ?
+                     ''', (room,))
+        print('auto approve: ', bool(auto_approve))
         
         # Insert request
-        conn.execute('''
-            INSERT INTO requests (uid, name, start_time, end_time, room)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (user['rfid_uid'], user['name'], start_time_iso, end_time_iso, room))
+        if bool(auto_approve):
+            conn.execute('''
+                INSERT INTO requests (uid, name, start_time, end_time, room, access, approved_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (user['rfid_uid'], user['name'], start_time_iso, end_time_iso, room, bool(auto_approve), 'Auto Approved'))
+        else:
+            conn.execute('''
+                INSERT INTO requests (uid, name, start_time, end_time, room)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (user['rfid_uid'], user['name'], start_time_iso, end_time_iso, room))
         
         conn.commit()
         conn.close()
@@ -842,6 +857,7 @@ def get_rooms():
             rooms_list.append({
                 'id': room['id'],
                 'room': room['room'],
+                'auto_approve': room['auto_approve'],
                 'mac_address': room['mac_address'],
                 'ip_address': room['ip_address'],
                 'last_seen': room['last_seen'],
@@ -1176,4 +1192,4 @@ if __name__ == '__main__':
     background_tasks()
 
     # Run the Flask application
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5000, debug=False)
