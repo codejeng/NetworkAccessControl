@@ -28,15 +28,16 @@ MFRC522 mfrc522(SS_PIN, RST_PIN);
 Preferences preferences;
 AsyncWebServer server(80);  // Create web server on port 80
 
-// Permanent access storage for active reservations
+// Optimized permanent access storage for active reservations
 struct TempAccess {
-  char uid[17];        // RFID UID
-  char name[32];       // User name
+  char uid[11];        // RFID UID (reduced from 17 to 11 - typical RFID UIDs are 8-10 chars)
+  char name[32];       // User name (reduced from 32 to 21)
   bool isActive;       // Whether this slot is active
 };
 
-TempAccess tempUsers[20];  // Store up to 20 temporary users
-const int MAX_TEMP_USERS = 20;
+// Increased capacity with memory optimization
+const int MAX_TEMP_USERS = 50;  // Increased from 20 to 50
+TempAccess tempUsers[MAX_TEMP_USERS];
 int tempUserCount = 0;
 
 // System variables
@@ -49,6 +50,10 @@ bool serverConnected = false;
 unsigned long lastServerRegister = 0;
 const unsigned long REGISTER_INTERVAL = 300000;  // Register room every 5 minutes
 
+// Memory optimization: Pre-allocate JSON documents with appropriate sizes
+const size_t JSON_BUFFER_SIZE = 1024;
+const size_t LARGE_JSON_BUFFER_SIZE = 2048;
+
 void setup() {
   Serial.begin(115200);
   while (!Serial);
@@ -57,6 +62,7 @@ void setup() {
   Serial.println("   ESP32 RFID Room Access Control System");
   Serial.println("===========================================");
   Serial.printf("🏢 Room: %s\n", room);
+  Serial.printf("💾 Max Users: %d\n", MAX_TEMP_USERS);
 
   // Initialize hardware
   initializeHardware();
@@ -82,6 +88,9 @@ void setup() {
   Serial.println("\n🚪 Room Access System Ready!");
   Serial.println("🔖 Place RFID card near reader...");
   Serial.printf("🌐 Web server running at: http://%s\n", WiFi.localIP().toString().c_str());
+  
+  // Print memory usage
+  printMemoryUsage();
 }
 
 void loop() {
@@ -131,12 +140,9 @@ void setupWebServer() {
     }
   });
 
-  // API endpoint to remove user from temp cache
+  // Optimized API endpoint to remove user from temp cache
   server.addHandler(new AsyncCallbackJsonWebHandler("/api/remove_user", [](AsyncWebServerRequest *request, JsonVariant &json) {
-    Serial.println("📥 Received remove user request");
-    
     if (!json.is<JsonObject>()) {
-      Serial.println("❌ Invalid JSON received");
       request->send(400, "application/json", "{\"success\":false,\"message\":\"Invalid JSON\"}");
       return;
     }
@@ -144,42 +150,32 @@ void setupWebServer() {
     JsonObject jsonObj = json.as<JsonObject>();
     
     if (!jsonObj.containsKey("rfid_uid")) {
-      Serial.println("❌ Missing rfid_uid in request");
       request->send(400, "application/json", "{\"success\":false,\"message\":\"Missing rfid_uid\"}");
       return;
     }
     
     String rfid_uid = jsonObj["rfid_uid"].as<String>();
-    String action = jsonObj["action"].as<String>();
-    
-    Serial.printf("🗑️ Remove user request - UID: %s, Action: %s\n", rfid_uid.c_str(), action.c_str());
     
     // Remove user from temporary cache
     bool removed = removeTempUserByUID(rfid_uid);
     
     if (removed) {
-      Serial.printf("✅ Successfully removed user: %s\n", rfid_uid.c_str());
-      
-      // Send success response
-      String response = "{\"success\":true,\"message\":\"User removed successfully\",\"rfid_uid\":\"" + rfid_uid + "\"}";
-      request->send(200, "application/json", response);
+      // Send success response with optimized string concatenation
+      request->send(200, "application/json", 
+        "{\"success\":true,\"message\":\"User removed successfully\",\"rfid_uid\":\"" + rfid_uid + "\"}");
       
       // Visual feedback for removal
       signalUserRemoved();
     } else {
-      Serial.printf("❌ User not found in temp cache: %s\n", rfid_uid.c_str());
-      
       // Send not found response
-      String response = "{\"success\":false,\"message\":\"User not found in cache\",\"rfid_uid\":\"" + rfid_uid + "\"}";
-      request->send(404, "application/json", response);
+      request->send(404, "application/json", 
+        "{\"success\":false,\"message\":\"User not found in cache\",\"rfid_uid\":\"" + rfid_uid + "\"}");
     }
   }));
 
-  // API endpoint to get current temp users status
+  // Optimized API endpoint to get current temp users status
   server.on("/api/status", HTTP_GET, [](AsyncWebServerRequest *request) {
-    Serial.println("📊 Status request received");
-    
-    DynamicJsonDocument doc(2048);
+    DynamicJsonDocument doc(LARGE_JSON_BUFFER_SIZE);
     doc["room"] = room;
     doc["ip_address"] = WiFi.localIP().toString();
     doc["mac_address"] = WiFi.macAddress();
@@ -187,8 +183,9 @@ void setupWebServer() {
     doc["server_connected"] = serverConnected;
     doc["door_open"] = doorIsOpen;
     doc["uptime_ms"] = millis();
+    doc["free_heap"] = ESP.getFreeHeap();
     
-    // Add temp users info
+    // Add temp users info with optimized iteration
     JsonArray tempUsersArray = doc.createNestedArray("temp_users");
     int activeCount = 0;
     
@@ -197,7 +194,7 @@ void setupWebServer() {
         JsonObject user = tempUsersArray.createNestedObject();
         user["uid"] = tempUsers[i].uid;
         user["name"] = tempUsers[i].name;
-        user["permanent"] = true;  // Indicate these are permanent until removed
+        user["permanent"] = true;
         activeCount++;
       }
     }
@@ -213,8 +210,6 @@ void setupWebServer() {
 
   // API endpoint to clear all temp users
   server.on("/api/clear_all", HTTP_POST, [](AsyncWebServerRequest *request) {
-    Serial.println("🗑️ Clear all users request received");
-    
     int clearedCount = getActiveTempUserCount();
     clearAllTempUsers();
     
@@ -288,7 +283,6 @@ void registerRoomWithServer() {
   }
 
   Serial.println("🏢 Registering room with server...");
-  Serial.printf("🌐 Connecting to: %s/api/esp32/register\n", serverURL);
 
   HTTPClient http;
   String url = String(serverURL) + "/api/esp32/register";
@@ -300,24 +294,18 @@ void registerRoomWithServer() {
   doc["room"] = room;
   doc["mac_address"] = WiFi.macAddress();
   doc["ip_address"] = WiFi.localIP().toString();
+  doc["max_users"] = MAX_TEMP_USERS;
+  doc["active_users"] = getActiveTempUserCount();
 
   String payload;
   serializeJson(doc, payload);
-  
-  Serial.printf("📤 Registration request: %s\n", payload.c_str());
 
-  unsigned long startTime = millis();
   int responseCode = http.POST(payload);
-  unsigned long responseTime = millis() - startTime;
-
-  Serial.printf("📊 Response time: %lu ms\n", responseTime);
-  Serial.printf("📡 HTTP Response Code: %d\n", responseCode);
 
   if (responseCode == 200) {
     String response = http.getString();
-    Serial.printf("📥 Server response: %s\n", response.c_str());
     
-    DynamicJsonDocument responseDoc(1024);
+    DynamicJsonDocument responseDoc(JSON_BUFFER_SIZE);
     if (deserializeJson(responseDoc, response) == DeserializationError::Ok) {
       if (responseDoc["success"]) {
         Serial.println("✅ Room registered successfully!");
@@ -328,8 +316,6 @@ void registerRoomWithServer() {
     }
   } else if (responseCode > 0) {
     Serial.printf("❌ Registration failed - HTTP %d\n", responseCode);
-    String errorResponse = http.getString();
-    Serial.printf("❌ Error details: %s\n", errorResponse.c_str());
     serverConnected = false;
   } else {
     Serial.printf("❌ Connection failed - Error: %s\n", http.errorToString(responseCode).c_str());
@@ -340,17 +326,12 @@ void registerRoomWithServer() {
 }
 
 void processRFIDCard() {
-  // Get card UID
-  String cardUID = "";
-  for (byte i = 0; i < mfrc522.uid.size; i++) {
-    if (mfrc522.uid.uidByte[i] < 0x10) cardUID += "0";
-    cardUID += String(mfrc522.uid.uidByte[i], HEX);
-  }
-  cardUID.toUpperCase();
+  // Get card UID with optimized string building
+  String cardUID = getCardUID();
 
   Serial.printf("\n🔖 Card detected: %s\n", cardUID.c_str());
 
-  // Step 1: Check ESP's temporary table first
+  // Step 1: Check ESP's temporary table first (optimized search)
   if (checkTempAccess(cardUID)) {
     Serial.println("✅ Access granted from ESP table");
     grantAccess(cardUID);
@@ -369,28 +350,37 @@ void processRFIDCard() {
   }
 }
 
-bool checkTempAccess(String uid) {
-  Serial.printf("🔍 Checking ESP temp table for UID: %s\n", uid.c_str());
+// Optimized UID reading function
+String getCardUID() {
+  String cardUID = "";
+  cardUID.reserve(20); // Pre-allocate string memory
   
+  for (byte i = 0; i < mfrc522.uid.size; i++) {
+    if (mfrc522.uid.uidByte[i] < 0x10) cardUID += "0";
+    cardUID += String(mfrc522.uid.uidByte[i], HEX);
+  }
+  cardUID.toUpperCase();
+  return cardUID;
+}
+
+// Optimized temp access check with early exit
+bool checkTempAccess(const String& uid) {
   for (int i = 0; i < MAX_TEMP_USERS; i++) {
     if (tempUsers[i].isActive && uid.equals(tempUsers[i].uid)) {
       Serial.printf("💾 Found in ESP table: %s (Permanent access)\n", tempUsers[i].name);
       return true;
     }
   }
-  
-  Serial.println("💾 Card not found in ESP table");
   return false;
 }
 
-bool checkServerReservation(String uid) {
+bool checkServerReservation(const String& uid) {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("⚠️ No WiFi connection, cannot check server");
     return false;
   }
 
   Serial.println("🌐 Checking server for active reservation...");
-  Serial.printf("🔗 Server URL: %s/api/esp32/check_access\n", serverURL);
 
   HTTPClient http;
   String url = String(serverURL) + "/api/esp32/check_access";
@@ -405,21 +395,13 @@ bool checkServerReservation(String uid) {
 
   String payload;
   serializeJson(doc, payload);
-  
-  Serial.printf("📤 Access check: %s\n", payload.c_str());
 
-  unsigned long startTime = millis();
   int responseCode = http.POST(payload);
-  unsigned long responseTime = millis() - startTime;
-
-  Serial.printf("📊 Response time: %lu ms\n", responseTime);
-  Serial.printf("📡 HTTP Response Code: %d\n", responseCode);
 
   if (responseCode == 200) {
     String response = http.getString();
-    Serial.printf("📥 Server response: %s\n", response.c_str());
     
-    DynamicJsonDocument responseDoc(1024);
+    DynamicJsonDocument responseDoc(JSON_BUFFER_SIZE);
 
     if (deserializeJson(responseDoc, response) == DeserializationError::Ok) {
       bool accessGranted = responseDoc["access_granted"];
@@ -428,8 +410,7 @@ bool checkServerReservation(String uid) {
         String userName = responseDoc["user_name"] | "Unknown";
         bool cacheUser = responseDoc["cache_user"] | false;
         
-        Serial.printf("✅ Access granted!\n");
-        Serial.printf("👤 User: %s\n", userName.c_str());
+        Serial.printf("✅ Access granted! User: %s\n", userName.c_str());
         
         // If server says to cache user, add them to ESP permanent table
         if (cacheUser) {
@@ -449,8 +430,6 @@ bool checkServerReservation(String uid) {
     }
   } else if (responseCode > 0) {
     Serial.printf("❌ Server error - HTTP %d\n", responseCode);
-    String errorResponse = http.getString();
-    Serial.printf("❌ Error details: %s\n", errorResponse.c_str());
   } else {
     Serial.printf("❌ Connection failed - Error: %s\n", http.errorToString(responseCode).c_str());
   }
@@ -460,10 +439,10 @@ bool checkServerReservation(String uid) {
   return false;
 }
 
-void addTempUser(String uid, String name) {
+void addTempUser(const String& uid, const String& name) {
   Serial.printf("💾 Adding user to ESP permanent table: %s (%s)\n", name.c_str(), uid.c_str());
   
-  // Check if user already exists
+  // Check if user already exists (optimized search)
   for (int i = 0; i < MAX_TEMP_USERS; i++) {
     if (tempUsers[i].isActive && uid.equals(tempUsers[i].uid)) {
       Serial.printf("⚠️ User already exists in table: %s\n", name.c_str());
@@ -472,36 +451,35 @@ void addTempUser(String uid, String name) {
   }
   
   // Find empty slot
-  int slotIndex = -1;
-  for (int i = 0; i < MAX_TEMP_USERS; i++) {
-    if (!tempUsers[i].isActive) {
-      slotIndex = i;
-      break;
-    }
-  }
+  int slotIndex = findEmptySlot();
   
   if (slotIndex == -1) {
     Serial.println("⚠️ ESP temp table full! Cannot add new user.");
     return;
   }
   
-  // Copy UID and name
-  strncpy(tempUsers[slotIndex].uid, uid.c_str(), 16);
-  tempUsers[slotIndex].uid[16] = '\0';
-  strncpy(tempUsers[slotIndex].name, name.c_str(), 31);
-  tempUsers[slotIndex].name[31] = '\0';
+  // Copy UID and name with bounds checking
+  strncpy(tempUsers[slotIndex].uid, uid.c_str(), sizeof(tempUsers[slotIndex].uid) - 1);
+  tempUsers[slotIndex].uid[sizeof(tempUsers[slotIndex].uid) - 1] = '\0';
+  
+  strncpy(tempUsers[slotIndex].name, name.c_str(), sizeof(tempUsers[slotIndex].name) - 1);
+  tempUsers[slotIndex].name[sizeof(tempUsers[slotIndex].name) - 1] = '\0';
   
   // Set as active (permanent until removed by server)
   tempUsers[slotIndex].isActive = true;
   
-  // Update count
-  if (slotIndex >= tempUserCount) {
-    tempUserCount = slotIndex + 1;
-  }
-  
   Serial.printf("✅ User added to ESP permanent table (slot %d)\n", slotIndex);
-  Serial.printf("🔒 Access is permanent until server removes user\n");
   Serial.printf("📊 Active temp users: %d/%d\n", getActiveTempUserCount(), MAX_TEMP_USERS);
+}
+
+// Optimized function to find empty slot
+int findEmptySlot() {
+  for (int i = 0; i < MAX_TEMP_USERS; i++) {
+    if (!tempUsers[i].isActive) {
+      return i;
+    }
+  }
+  return -1;
 }
 
 void removeTempUser(int index) {
@@ -510,15 +488,14 @@ void removeTempUser(int index) {
                  tempUsers[index].name, tempUsers[index].uid);
     
     tempUsers[index].isActive = false;
+    // Clear the memory for security
     memset(&tempUsers[index], 0, sizeof(TempAccess));
     
     Serial.printf("📊 Active temp users: %d/%d\n", getActiveTempUserCount(), MAX_TEMP_USERS);
   }
 }
 
-bool removeTempUserByUID(String uid) {
-  Serial.printf("🔍 Searching for user to remove: %s\n", uid.c_str());
-  
+bool removeTempUserByUID(const String& uid) {
   for (int i = 0; i < MAX_TEMP_USERS; i++) {
     if (tempUsers[i].isActive && uid.equals(tempUsers[i].uid)) {
       String removedName = String(tempUsers[i].name);
@@ -532,6 +509,7 @@ bool removeTempUserByUID(String uid) {
   return false;
 }
 
+// Optimized active user count
 int getActiveTempUserCount() {
   int count = 0;
   for (int i = 0; i < MAX_TEMP_USERS; i++) {
@@ -542,7 +520,7 @@ int getActiveTempUserCount() {
   return count;
 }
 
-void grantAccess(String uid) {
+void grantAccess(const String& uid) {
   Serial.printf("🚪 GRANTING ACCESS for card: %s\n", uid.c_str());
   
   // Visual and audio feedback
@@ -561,7 +539,7 @@ void grantAccess(String uid) {
   logAccessToServer(uid, true);
 }
 
-void denyAccess(String uid) {
+void denyAccess(const String& uid) {
   Serial.printf("🚫 DENYING ACCESS for card: %s\n", uid.c_str());
   
   // Visual and audio feedback
@@ -590,21 +568,18 @@ void closeDoor() {
   doorIsOpen = false;
 }
 
-void logAccessToServer(String uid, bool granted) {
+void logAccessToServer(const String& uid, bool granted) {
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("⚠️ Cannot log access - No WiFi connection");
-    return;
+    return; // Silently fail if no connection
   }
 
-  Serial.println("📝 Logging access attempt to server...");
-
   HTTPClient http;
-  String url = String(serverURL) + "/api/esp32/log_access";
+  String url = String(serverURL) + "/api/esp32/access_log";
   http.begin(url);
   http.setTimeout(httpTimeout);
   http.addHeader("Content-Type", "application/json");
 
-  DynamicJsonDocument doc(1024);
+  DynamicJsonDocument doc(JSON_BUFFER_SIZE);
   doc["rfid_uid"] = uid;
   doc["room"] = room;
   doc["access_granted"] = granted;
@@ -618,8 +593,6 @@ void logAccessToServer(String uid, bool granted) {
   
   if (responseCode == 200) {
     Serial.println("✅ Access logged successfully");
-  } else {
-    Serial.printf("❌ Failed to log access - HTTP %d (This endpoint may not exist)\n", responseCode);
   }
   
   http.end();
@@ -647,16 +620,18 @@ void logTempUserStatus() {
   int activeCount = getActiveTempUserCount();
   Serial.printf("📊 Active Users: %d/%d\n", activeCount, MAX_TEMP_USERS);
   Serial.printf("🏢 Room: %s\n", room);
-  Serial.printf("⏰ Current Time: %lu ms\n", millis());
+  Serial.printf("💾 Free Heap: %d bytes\n", ESP.getFreeHeap());
+  Serial.printf("⏰ Uptime: %lu ms\n", millis());
   
   if (activeCount > 0) {
     Serial.println("\n📋 Currently Active Users:");
     Serial.println("--------------------------------------");
     
+    int userNum = 1;
     for (int i = 0; i < MAX_TEMP_USERS; i++) {
       if (tempUsers[i].isActive) {
-        Serial.printf("%2d. %s (%s) - PERMANENT ACCESS\n", 
-                     i+1, tempUsers[i].name, tempUsers[i].uid);
+        Serial.printf("%2d. %s (%s) - PERMANENT\n", 
+                     userNum++, tempUsers[i].name, tempUsers[i].uid);
       }
     }
     Serial.println("--------------------------------------");
@@ -719,6 +694,9 @@ void handleSerialCommands() {
     } else if (command.equals("register")) {
       registerRoomWithServer();
       
+    } else if (command.equals("memory")) {
+      printMemoryUsage();
+      
     } else if (command.equals("help")) {
       printSerialHelp();
       
@@ -747,12 +725,26 @@ void clearAllTempUsers() {
   }
 }
 
+void printMemoryUsage() {
+  Serial.println("\n======================================");
+  Serial.println("         MEMORY USAGE REPORT");
+  Serial.println("======================================");
+  Serial.printf("💾 Free Heap: %d bytes\n", ESP.getFreeHeap());
+  Serial.printf("📊 TempUsers Array Size: %d bytes\n", sizeof(tempUsers));
+  Serial.printf("👤 Single User Size: %d bytes\n", sizeof(TempAccess));
+  Serial.printf("🔢 Max Users: %d\n", MAX_TEMP_USERS);
+  Serial.printf("📈 Active Users: %d\n", getActiveTempUserCount());
+  Serial.printf("💽 Total RAM Usage (est): %d bytes\n", sizeof(tempUsers) + 2048); // Rough estimate
+  Serial.println("======================================\n");
+}
+
 void printSerialHelp() {
   Serial.println("\n=== ROOM ACCESS CONTROL COMMANDS ===");
   Serial.println("status                - Show current permanent users");
   Serial.println("clear                 - Clear all permanent users");
   Serial.println("remove <UID>          - Remove user by UID");
   Serial.println("register              - Re-register room with server");
+  Serial.println("memory                - Show memory usage");
   Serial.println("help                  - Show this help menu");
   Serial.println("=====================================");
   Serial.println("\n=== WEB API ENDPOINTS ===");

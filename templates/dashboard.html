@@ -780,7 +780,7 @@
                                   entry.room_ip || "N/A"
                                 }</small>
                             </td>
-                            <td>${entry.name}</td>
+                            <td>[${entry.role.toUpperCase()}]${entry.name}</td>
                             <td><code>${entry.rfid_uid}</code></td>
                             <td>${formatDateTime(entry.expires_at)}</td>
                             <td><span class="${statusClass}">${entry.expired_status.toUpperCase()}</span></td>

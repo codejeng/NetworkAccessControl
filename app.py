@@ -93,8 +93,8 @@ def init_database():
     if cursor.fetchone()[0] == 0:
         sample_users = [
             ('EA20B1CC', 'Apichet Thamraksa', 'student'),
-            ('AB12CD34', 'Teacher John', 'teacher'),
-            ('12345678', 'Admin User', 'admin'),
+            ('631FBF15', 'Testing Name', 'student'),
+            ('C3228B12', 'Testing Name2', 'admin'),
         ]
         
         cursor.executemany(
@@ -123,7 +123,11 @@ def background_tasks(update_interval=10, cleanup_interval=10):
                 conn = get_db_connection()
                 cursor = conn.cursor()
                 
-                cache_entries = cursor.execute('SELECT id, expires_at FROM esp32_cache').fetchall()
+                cache_entries = cursor.execute('''
+                                               SELECT ec.id, ec.name, users.role, ec.expires_at
+                                               FROM esp32_cache ec
+                                               JOIN users ON ec.name = users.name
+                                               ''').fetchall()
                 current_time = datetime.now()
 
                 for entry in cache_entries:
@@ -138,11 +142,12 @@ def background_tasks(update_interval=10, cleanup_interval=10):
 
                     expired_status = 'offline' if current_time > end_time else 'online'
 
-                    cursor.execute('''
-                        UPDATE esp32_cache
-                        SET expired_status = ?
-                        WHERE id = ?
-                    ''', (expired_status, entry['id']))
+                    if entry['role'] != 'admin':
+                        cursor.execute('''
+                            UPDATE esp32_cache
+                            SET expired_status = ?
+                            WHERE id = ?
+                        ''', (expired_status, entry['id']))
 
                 conn.commit()
                 conn.close()
@@ -168,7 +173,6 @@ def background_tasks(update_interval=10, cleanup_interval=10):
     threading.Thread(target=cleanup_cache_worker, daemon=True).start()
 
     print("✅ Background tasks started: expired status updater and cache cleaner")
-
 
 def get_cache_with_expired_status():
     """Helper function to get cache entries with expired_status field"""
@@ -631,21 +635,6 @@ def submit_request():
         start_time_iso = start_dt.isoformat()
         end_time_iso = end_dt.isoformat()
         
-        # Check for overlapping requests
-        overlapping = conn.execute('''
-            SELECT * FROM requests 
-            WHERE room = ? AND access = TRUE
-            AND (
-                (datetime(start_time) <= datetime(?) AND datetime(end_time) > datetime(?))
-                OR (datetime(start_time) < datetime(?) AND datetime(end_time) >= datetime(?))
-                OR (datetime(start_time) >= datetime(?) AND datetime(end_time) <= datetime(?))
-            )
-        ''', (room, start_time_iso, start_time_iso, end_time_iso, end_time_iso, start_time_iso, end_time_iso)).fetchone()
-        
-        if overlapping:
-            conn.close()
-            return jsonify({'error': 'Room is already booked for this time period', 'success': False}), 400
-        
         # Insert request
         conn.execute('''
             INSERT INTO requests (uid, name, start_time, end_time, room)
@@ -873,9 +862,10 @@ def get_esp32_cache_updated():
         
         # Get all cache entries
         cache_entries = conn.execute('''
-            SELECT ec.*, r.ip_address, r.status as room_status 
+            SELECT ec.*, u.role, r.ip_address, r.status as room_status 
             FROM esp32_cache ec
             JOIN rooms r ON ec.room = r.room
+            JOIN users u ON ec.name = u.name
             ORDER BY ec.room, ec.expires_at
         ''').fetchall()
         
@@ -900,13 +890,17 @@ def get_esp32_cache_updated():
                 end_time = datetime.min
             
             # Set expired_status: 'offline' if expired, 'online' if not expired
-            expired_status = 'offline' if current_time > end_time else 'online'
+            if entry['role'] != 'admin':
+                expired_status = 'offline' if current_time > end_time else 'online'
+            else:
+                expired_status = 'online'
             
             cache_list.append({
                 'id': entry['id'],
                 'room': entry['room'],
                 'rfid_uid': entry['rfid_uid'],
                 'name': entry['name'],
+                'role': entry['role'],
                 'expires_at': entry['expires_at'],
                 'created_at': entry['created_at'],
                 'room_ip': entry['ip_address'],
@@ -1097,9 +1091,10 @@ def get_esp32_cache_with_status_update():
         
         # Step 1: Get all cache entries with room information
         cache_entries = cursor.execute('''
-            SELECT ec.*, r.ip_address, r.status as room_status, r.id as room_id
+            SELECT ec.*, u.role, r.ip_address, r.status as room_status, r.id as room_id
             FROM esp32_cache ec
             JOIN rooms r ON ec.room = r.room
+            JOIN users u ON ec.name = u.name
             ORDER BY ec.room, ec.expires_at
         ''').fetchall()
         
@@ -1117,20 +1112,23 @@ def get_esp32_cache_with_status_update():
                 end_time = datetime.min
 
             # Determine expired status
-            expired_status = 'offline' if current_time > end_time else 'online'
+            if entry['role'] != 'admin':
+                expired_status = 'offline' if current_time > end_time else 'online'
 
             # Update expired_status in the database if necessary
-            cursor.execute('''
-                UPDATE esp32_cache
-                SET expired_status = ?
-                WHERE id = ?
-            ''', (expired_status, entry['id']))
+            if entry['role'] != 'admin':
+                cursor.execute('''
+                    UPDATE esp32_cache
+                    SET expired_status = ?
+                    WHERE id = ?
+                ''', (expired_status, entry['id']))
 
             cache_list.append({
                 'id': entry['id'],
                 'room': entry['room'],
                 'rfid_uid': entry['rfid_uid'],
                 'name': entry['name'],
+                'role': entry['role'],
                 'expires_at': entry['expires_at'],
                 'created_at': entry['created_at'],
                 'room_ip': entry['ip_address'],
