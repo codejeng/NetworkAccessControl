@@ -1,4 +1,4 @@
-#!/home/codejeng/Desktop/NetworkProjects/NetworkAccessControl/venv/bin/python3
+#!/home/codejeng/Desktop/NetworkAccessControl/venv/bin/python3
 # -*- coding: utf-8 -*-
 import re
 import sys

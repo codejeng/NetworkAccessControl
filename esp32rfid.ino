@@ -4,6 +4,8 @@
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <Preferences.h>
+#include <ESPAsyncWebServer.h>
+#include <AsyncJson.h>
 
 // Configuration - Modify these values for each room
 const char* ssid = "NAC";
@@ -24,12 +26,12 @@ const int httpTimeout = 5000;
 // Create instances
 MFRC522 mfrc522(SS_PIN, RST_PIN);
 Preferences preferences;
+AsyncWebServer server(80);  // Create web server on port 80
 
-// Temporary access storage for active reservations
+// Permanent access storage for active reservations
 struct TempAccess {
   char uid[17];        // RFID UID
   char name[32];       // User name
-  unsigned long endTime;  // When access expires (millis)
   bool isActive;       // Whether this slot is active
 };
 
@@ -38,8 +40,6 @@ const int MAX_TEMP_USERS = 20;
 int tempUserCount = 0;
 
 // System variables
-unsigned long lastCleanupTime = 0;
-const unsigned long CLEANUP_INTERVAL = 120000;  // Check every 2 minutes
 unsigned long doorOpenTime = 0;
 const unsigned long DOOR_OPEN_DURATION = 3000;  // 3 seconds
 bool doorIsOpen = false;
@@ -68,6 +68,9 @@ void setup() {
   // Connect to WiFi
   connectToWiFi();
 
+  // Setup web server routes
+  setupWebServer();
+
   // Register this room with server
   registerRoomWithServer();
 
@@ -78,6 +81,7 @@ void setup() {
   signalReady();
   Serial.println("\n🚪 Room Access System Ready!");
   Serial.println("🔖 Place RFID card near reader...");
+  Serial.printf("🌐 Web server running at: http://%s\n", WiFi.localIP().toString().c_str());
 }
 
 void loop() {
@@ -90,12 +94,6 @@ void loop() {
   if (millis() - lastServerRegister > REGISTER_INTERVAL) {
     registerRoomWithServer();
     lastServerRegister = millis();
-  }
-
-  // Cleanup expired temporary users every 2 minutes
-  if (millis() - lastCleanupTime > CLEANUP_INTERVAL) {
-    cleanupExpiredUsers();
-    lastCleanupTime = millis();
   }
 
   // Handle door timing
@@ -114,6 +112,120 @@ void loop() {
   }
 
   delay(100);
+}
+
+void setupWebServer() {
+  Serial.println("🌐 Setting up web server...");
+  
+  // CORS Headers
+  DefaultHeaders::Instance().addHeader("Access-Control-Allow-Origin", "*");
+  DefaultHeaders::Instance().addHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+  DefaultHeaders::Instance().addHeader("Access-Control-Allow-Headers", "Content-Type");
+
+  // Handle preflight OPTIONS requests
+  server.onNotFound([](AsyncWebServerRequest *request) {
+    if (request->method() == HTTP_OPTIONS) {
+      request->send(200);
+    } else {
+      request->send(404, "application/json", "{\"error\":\"Not found\"}");
+    }
+  });
+
+  // API endpoint to remove user from temp cache
+  server.addHandler(new AsyncCallbackJsonWebHandler("/api/remove_user", [](AsyncWebServerRequest *request, JsonVariant &json) {
+    Serial.println("📥 Received remove user request");
+    
+    if (!json.is<JsonObject>()) {
+      Serial.println("❌ Invalid JSON received");
+      request->send(400, "application/json", "{\"success\":false,\"message\":\"Invalid JSON\"}");
+      return;
+    }
+    
+    JsonObject jsonObj = json.as<JsonObject>();
+    
+    if (!jsonObj.containsKey("rfid_uid")) {
+      Serial.println("❌ Missing rfid_uid in request");
+      request->send(400, "application/json", "{\"success\":false,\"message\":\"Missing rfid_uid\"}");
+      return;
+    }
+    
+    String rfid_uid = jsonObj["rfid_uid"].as<String>();
+    String action = jsonObj["action"].as<String>();
+    
+    Serial.printf("🗑️ Remove user request - UID: %s, Action: %s\n", rfid_uid.c_str(), action.c_str());
+    
+    // Remove user from temporary cache
+    bool removed = removeTempUserByUID(rfid_uid);
+    
+    if (removed) {
+      Serial.printf("✅ Successfully removed user: %s\n", rfid_uid.c_str());
+      
+      // Send success response
+      String response = "{\"success\":true,\"message\":\"User removed successfully\",\"rfid_uid\":\"" + rfid_uid + "\"}";
+      request->send(200, "application/json", response);
+      
+      // Visual feedback for removal
+      signalUserRemoved();
+    } else {
+      Serial.printf("❌ User not found in temp cache: %s\n", rfid_uid.c_str());
+      
+      // Send not found response
+      String response = "{\"success\":false,\"message\":\"User not found in cache\",\"rfid_uid\":\"" + rfid_uid + "\"}";
+      request->send(404, "application/json", response);
+    }
+  }));
+
+  // API endpoint to get current temp users status
+  server.on("/api/status", HTTP_GET, [](AsyncWebServerRequest *request) {
+    Serial.println("📊 Status request received");
+    
+    DynamicJsonDocument doc(2048);
+    doc["room"] = room;
+    doc["ip_address"] = WiFi.localIP().toString();
+    doc["mac_address"] = WiFi.macAddress();
+    doc["wifi_connected"] = (WiFi.status() == WL_CONNECTED);
+    doc["server_connected"] = serverConnected;
+    doc["door_open"] = doorIsOpen;
+    doc["uptime_ms"] = millis();
+    
+    // Add temp users info
+    JsonArray tempUsersArray = doc.createNestedArray("temp_users");
+    int activeCount = 0;
+    
+    for (int i = 0; i < MAX_TEMP_USERS; i++) {
+      if (tempUsers[i].isActive) {
+        JsonObject user = tempUsersArray.createNestedObject();
+        user["uid"] = tempUsers[i].uid;
+        user["name"] = tempUsers[i].name;
+        user["permanent"] = true;  // Indicate these are permanent until removed
+        activeCount++;
+      }
+    }
+    
+    doc["active_temp_users"] = activeCount;
+    doc["max_temp_users"] = MAX_TEMP_USERS;
+    
+    String response;
+    serializeJson(doc, response);
+    
+    request->send(200, "application/json", response);
+  });
+
+  // API endpoint to clear all temp users
+  server.on("/api/clear_all", HTTP_POST, [](AsyncWebServerRequest *request) {
+    Serial.println("🗑️ Clear all users request received");
+    
+    int clearedCount = getActiveTempUserCount();
+    clearAllTempUsers();
+    
+    String response = "{\"success\":true,\"message\":\"All temp users cleared\",\"cleared_count\":" + String(clearedCount) + "}";
+    request->send(200, "application/json", response);
+  });
+
+  // Start server
+  server.begin();
+  Serial.println("✅ Web server started successfully");
+  Serial.printf("🌐 Listening on: http://%s\n", WiFi.localIP().toString().c_str());
 }
 
 void initializeHardware() {
@@ -179,16 +291,15 @@ void registerRoomWithServer() {
   Serial.printf("🌐 Connecting to: %s/api/esp32/register\n", serverURL);
 
   HTTPClient http;
-  String url = String(serverURL) + "/api/esp32/register";  // FIXED: Changed from /api/register_room
+  String url = String(serverURL) + "/api/esp32/register";
   http.begin(url);
   http.setTimeout(httpTimeout);
   http.addHeader("Content-Type", "application/json");
 
-  // Create JSON payload - FIXED: Match Flask server expectations
   DynamicJsonDocument doc(512);
   doc["room"] = room;
-  doc["mac_address"] = WiFi.macAddress();  // FIXED: Changed from "MAC"
-  doc["ip_address"] = WiFi.localIP().toString();  // FIXED: Changed from "IP"
+  doc["mac_address"] = WiFi.macAddress();
+  doc["ip_address"] = WiFi.localIP().toString();
 
   String payload;
   serializeJson(doc, payload);
@@ -263,18 +374,8 @@ bool checkTempAccess(String uid) {
   
   for (int i = 0; i < MAX_TEMP_USERS; i++) {
     if (tempUsers[i].isActive && uid.equals(tempUsers[i].uid)) {
-      // Check if access hasn't expired
-      if (millis() < tempUsers[i].endTime) {
-        Serial.printf("💾 Found in ESP table: %s (Expires in %lu ms)\n", 
-                     tempUsers[i].name, 
-                     tempUsers[i].endTime - millis());
-        return true;
-      } else {
-        Serial.printf("⏰ Access expired for: %s\n", tempUsers[i].name);
-        // Remove expired user
-        removeTempUser(i);
-        return false;
-      }
+      Serial.printf("💾 Found in ESP table: %s (Permanent access)\n", tempUsers[i].name);
+      return true;
     }
   }
   
@@ -292,16 +393,15 @@ bool checkServerReservation(String uid) {
   Serial.printf("🔗 Server URL: %s/api/esp32/check_access\n", serverURL);
 
   HTTPClient http;
-  String url = String(serverURL) + "/api/esp32/check_access";  // FIXED: Changed from /api/check_reservation
+  String url = String(serverURL) + "/api/esp32/check_access";
   http.begin(url);
   http.setTimeout(httpTimeout);
   http.addHeader("Content-Type", "application/json");
 
-  // Create JSON payload - FIXED: Match Flask server expectations
   DynamicJsonDocument doc(512);
   doc["rfid_uid"] = uid;
   doc["room"] = room;
-  doc["mac_address"] = WiFi.macAddress();  // FIXED: Added mac_address
+  doc["mac_address"] = WiFi.macAddress();
 
   String payload;
   serializeJson(doc, payload);
@@ -326,18 +426,15 @@ bool checkServerReservation(String uid) {
       
       if (accessGranted) {
         String userName = responseDoc["user_name"] | "Unknown";
-        String expiresAt = responseDoc["expires_at"] | "";
         bool cacheUser = responseDoc["cache_user"] | false;
         
         Serial.printf("✅ Access granted!\n");
         Serial.printf("👤 User: %s\n", userName.c_str());
-        Serial.printf("⏰ Expires at: %s\n", expiresAt.c_str());
         
-        // If server says to cache user, add them to ESP temporary table
-        if (cacheUser && !expiresAt.isEmpty()) {
-          // Calculate duration (simplified - you might want better time parsing)
-          unsigned long durationMinutes = 60; // Default 1 hour
-          addTempUser(uid, userName, durationMinutes * 1000);
+        // If server says to cache user, add them to ESP permanent table
+        if (cacheUser) {
+          addTempUser(uid, userName);
+          Serial.println("💾 User added to ESP permanent access table");
         }
         
         serverConnected = true;
@@ -363,21 +460,29 @@ bool checkServerReservation(String uid) {
   return false;
 }
 
-void addTempUser(String uid, String name, unsigned long durationMs) {
-  Serial.printf("💾 Adding user to ESP temp table: %s (%s)\n", name.c_str(), uid.c_str());
+void addTempUser(String uid, String name) {
+  Serial.printf("💾 Adding user to ESP permanent table: %s (%s)\n", name.c_str(), uid.c_str());
   
-  // Find empty slot or replace expired entry
+  // Check if user already exists
+  for (int i = 0; i < MAX_TEMP_USERS; i++) {
+    if (tempUsers[i].isActive && uid.equals(tempUsers[i].uid)) {
+      Serial.printf("⚠️ User already exists in table: %s\n", name.c_str());
+      return;
+    }
+  }
+  
+  // Find empty slot
   int slotIndex = -1;
   for (int i = 0; i < MAX_TEMP_USERS; i++) {
-    if (!tempUsers[i].isActive || millis() >= tempUsers[i].endTime) {
+    if (!tempUsers[i].isActive) {
       slotIndex = i;
       break;
     }
   }
   
   if (slotIndex == -1) {
-    Serial.println("⚠️ ESP temp table full! Replacing oldest entry...");
-    slotIndex = 0; // Replace first entry as fallback
+    Serial.println("⚠️ ESP temp table full! Cannot add new user.");
+    return;
   }
   
   // Copy UID and name
@@ -386,8 +491,7 @@ void addTempUser(String uid, String name, unsigned long durationMs) {
   strncpy(tempUsers[slotIndex].name, name.c_str(), 31);
   tempUsers[slotIndex].name[31] = '\0';
   
-  // Set expiration time
-  tempUsers[slotIndex].endTime = millis() + durationMs;
+  // Set as active (permanent until removed by server)
   tempUsers[slotIndex].isActive = true;
   
   // Update count
@@ -395,14 +499,14 @@ void addTempUser(String uid, String name, unsigned long durationMs) {
     tempUserCount = slotIndex + 1;
   }
   
-  Serial.printf("✅ User added to ESP table (slot %d)\n", slotIndex);
-  Serial.printf("⏰ Access expires at: %lu ms\n", tempUsers[slotIndex].endTime);
+  Serial.printf("✅ User added to ESP permanent table (slot %d)\n", slotIndex);
+  Serial.printf("🔒 Access is permanent until server removes user\n");
   Serial.printf("📊 Active temp users: %d/%d\n", getActiveTempUserCount(), MAX_TEMP_USERS);
 }
 
 void removeTempUser(int index) {
   if (index >= 0 && index < MAX_TEMP_USERS && tempUsers[index].isActive) {
-    Serial.printf("🗑️ Removing expired user: %s (%s)\n", 
+    Serial.printf("🗑️ Removing user: %s (%s)\n", 
                  tempUsers[index].name, tempUsers[index].uid);
     
     tempUsers[index].isActive = false;
@@ -412,25 +516,20 @@ void removeTempUser(int index) {
   }
 }
 
-void cleanupExpiredUsers() {
-  Serial.println("🧹 Cleaning up expired users...");
+bool removeTempUserByUID(String uid) {
+  Serial.printf("🔍 Searching for user to remove: %s\n", uid.c_str());
   
-  int removedCount = 0;
   for (int i = 0; i < MAX_TEMP_USERS; i++) {
-    if (tempUsers[i].isActive && millis() >= tempUsers[i].endTime) {
-      Serial.printf("⏰ Removing expired user: %s\n", tempUsers[i].name);
+    if (tempUsers[i].isActive && uid.equals(tempUsers[i].uid)) {
+      String removedName = String(tempUsers[i].name);
       removeTempUser(i);
-      removedCount++;
+      Serial.printf("✅ Removed user: %s (%s)\n", removedName.c_str(), uid.c_str());
+      return true;
     }
   }
   
-  if (removedCount > 0) {
-    Serial.printf("✅ Removed %d expired users\n", removedCount);
-  } else {
-    Serial.println("✅ No expired users found");
-  }
-  
-  logTempUserStatus();
+  Serial.printf("❌ User not found: %s\n", uid.c_str());
+  return false;
 }
 
 int getActiveTempUserCount() {
@@ -500,9 +599,7 @@ void logAccessToServer(String uid, bool granted) {
   Serial.println("📝 Logging access attempt to server...");
 
   HTTPClient http;
-  // Note: Your Flask server doesn't have a logging endpoint, so this will fail
-  // You might want to add this endpoint to your Flask server or remove this function
-  String url = String(serverURL) + "/api/esp32/log_access";  // This endpoint doesn't exist
+  String url = String(serverURL) + "/api/esp32/log_access";
   http.begin(url);
   http.setTimeout(httpTimeout);
   http.addHeader("Content-Type", "application/json");
@@ -511,8 +608,8 @@ void logAccessToServer(String uid, bool granted) {
   doc["rfid_uid"] = uid;
   doc["room"] = room;
   doc["access_granted"] = granted;
-  doc["mac_address"] = WiFi.macAddress();  // FIXED: Changed from device_mac
-  doc["ip_address"] = WiFi.localIP().toString();  // FIXED: Changed from device_ip
+  doc["mac_address"] = WiFi.macAddress();
+  doc["ip_address"] = WiFi.localIP().toString();
 
   String payload;
   serializeJson(doc, payload);
@@ -529,7 +626,7 @@ void logAccessToServer(String uid, bool granted) {
 }
 
 void initializeTempStorage() {
-  Serial.println("💾 Initializing temporary user storage...");
+  Serial.println("💾 Initializing permanent user storage...");
   
   // Clear all temporary users
   memset(tempUsers, 0, sizeof(tempUsers));
@@ -539,12 +636,12 @@ void initializeTempStorage() {
     tempUsers[i].isActive = false;
   }
   
-  Serial.printf("✅ Temp storage initialized (%d slots available)\n", MAX_TEMP_USERS);
+  Serial.printf("✅ Permanent storage initialized (%d slots available)\n", MAX_TEMP_USERS);
 }
 
 void logTempUserStatus() {
   Serial.println("\n======================================");
-  Serial.println("       TEMPORARY USER STATUS");
+  Serial.println("       PERMANENT USER STATUS");
   Serial.println("======================================");
   
   int activeCount = getActiveTempUserCount();
@@ -558,16 +655,13 @@ void logTempUserStatus() {
     
     for (int i = 0; i < MAX_TEMP_USERS; i++) {
       if (tempUsers[i].isActive) {
-        unsigned long remainingTime = (tempUsers[i].endTime > millis()) ? 
-                                    (tempUsers[i].endTime - millis()) : 0;
-        
-        Serial.printf("%2d. %s (%s) - Expires in %lu ms\n", 
-                     i+1, tempUsers[i].name, tempUsers[i].uid, remainingTime);
+        Serial.printf("%2d. %s (%s) - PERMANENT ACCESS\n", 
+                     i+1, tempUsers[i].name, tempUsers[i].uid);
       }
     }
     Serial.println("--------------------------------------");
   } else {
-    Serial.println("✅ No active temporary users");
+    Serial.println("✅ No active permanent users");
   }
   
   Serial.println("======================================\n");
@@ -586,6 +680,23 @@ void signalReady() {
   }
   
   Serial.println("✅ Ready signal completed");
+}
+
+void signalUserRemoved() {
+  Serial.println("🎵 User removed signal...");
+  
+  // Signal user was removed from cache
+  for (int i = 0; i < 2; i++) {
+    digitalWrite(LED_RED, HIGH);
+    tone(BUZZER_PIN, 800, 150);
+    delay(150);
+    digitalWrite(LED_RED, LOW);
+    delay(150);
+    tone(BUZZER_PIN, 600, 150);
+    delay(150);
+  }
+  
+  Serial.println("✅ User removed signal completed");
 }
 
 void handleSerialCommands() {
@@ -619,12 +730,12 @@ void handleSerialCommands() {
 }
 
 void clearAllTempUsers() {
-  Serial.println("🗑️ Clearing all temporary users...");
+  Serial.println("🗑️ Clearing all permanent users...");
   
   int clearedCount = getActiveTempUserCount();
   initializeTempStorage();
   
-  Serial.printf("✅ Cleared %d temporary users\n", clearedCount);
+  Serial.printf("✅ Cleared %d permanent users\n", clearedCount);
   
   // Visual feedback
   for (int i = 0; i < 3; i++) {
@@ -636,31 +747,17 @@ void clearAllTempUsers() {
   }
 }
 
-void removeTempUserByUID(String uid) {
-  Serial.printf("🔍 Searching for user to remove: %s\n", uid.c_str());
-  
-  bool found = false;
-  for (int i = 0; i < MAX_TEMP_USERS; i++) {
-    if (tempUsers[i].isActive && uid.equals(tempUsers[i].uid)) {
-      String removedName = String(tempUsers[i].name);
-      removeTempUser(i);
-      Serial.printf("✅ Removed user: %s (%s)\n", removedName.c_str(), uid.c_str());
-      found = true;
-      break;
-    }
-  }
-  
-  if (!found) {
-    Serial.printf("❌ User not found: %s\n", uid.c_str());
-  }
-}
-
 void printSerialHelp() {
   Serial.println("\n=== ROOM ACCESS CONTROL COMMANDS ===");
-  Serial.println("status                - Show current temporary users");
-  Serial.println("clear                 - Clear all temporary users");
+  Serial.println("status                - Show current permanent users");
+  Serial.println("clear                 - Clear all permanent users");
   Serial.println("remove <UID>          - Remove user by UID");
   Serial.println("register              - Re-register room with server");
   Serial.println("help                  - Show this help menu");
+  Serial.println("=====================================");
+  Serial.println("\n=== WEB API ENDPOINTS ===");
+  Serial.printf("GET  http://%s/api/status        - Get system status\n", WiFi.localIP().toString().c_str());
+  Serial.printf("POST http://%s/api/remove_user   - Remove user from cache\n", WiFi.localIP().toString().c_str());
+  Serial.printf("POST http://%s/api/clear_all     - Clear all temp users\n", WiFi.localIP().toString().c_str());
   Serial.println("=====================================\n");
 }

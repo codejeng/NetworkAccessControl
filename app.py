@@ -2,6 +2,9 @@ from flask import Flask, request, jsonify, render_template
 import sqlite3
 from datetime import datetime
 import logging
+import threading
+import time
+import requests
 
 app = Flask(__name__)
 
@@ -110,6 +113,63 @@ def get_db_connection():
     conn.row_factory = sqlite3.Row
     return conn
 
+def background_tasks(update_interval=10, cleanup_interval=10):
+    """Start background threads for updating expired statuses and cleaning up expired cache"""
+
+    def update_expired_status_worker():
+        """Thread to update esp32_cache expired_status periodically"""
+        while True:
+            try:
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                
+                cache_entries = cursor.execute('SELECT id, expires_at FROM esp32_cache').fetchall()
+                current_time = datetime.now()
+
+                for entry in cache_entries:
+                    end_time_str = entry['expires_at']
+                    try:
+                        if 'T' in end_time_str:
+                            end_time = datetime.fromisoformat(end_time_str.replace('T', ' '))
+                        else:
+                            end_time = datetime.strptime(end_time_str, '%Y-%m-%d %H:%M:%S')
+                    except ValueError:
+                        end_time = datetime.min
+
+                    expired_status = 'offline' if current_time > end_time else 'online'
+
+                    cursor.execute('''
+                        UPDATE esp32_cache
+                        SET expired_status = ?
+                        WHERE id = ?
+                    ''', (expired_status, entry['id']))
+
+                conn.commit()
+                conn.close()
+                time.sleep(update_interval)
+
+            except Exception as e:
+                logger.error(f"❌ Error in expired status updater: {str(e)}")
+                time.sleep(5)
+
+    def cleanup_cache_worker():
+        """Thread to remove expired users periodically"""
+        while True:
+            try:
+                print("🔄 Running periodic cache cleanup...")
+                cleanup_expired_cache_entries()
+                time.sleep(cleanup_interval)
+            except Exception as e:
+                print(f"❌ Error in cleanup worker: {str(e)}")
+                time.sleep(5)
+
+    # Start both threads
+    threading.Thread(target=update_expired_status_worker, daemon=True).start()
+    threading.Thread(target=cleanup_cache_worker, daemon=True).start()
+
+    print("✅ Background tasks started: expired status updater and cache cleaner")
+
+
 def get_cache_with_expired_status():
     """Helper function to get cache entries with expired_status field"""
     try:
@@ -165,6 +225,83 @@ def get_cache_with_expired_status():
     except Exception as e:
         logger.error(f"Error in get_cache_with_expired_status: {str(e)}")
         return []
+
+def send_remove_user_to_esp32(room_ip, rfid_uid):
+    """Send remove user request to ESP32"""
+    try:
+        url = f"http://{room_ip}/api/remove_user"
+        payload = {
+            "rfid_uid": rfid_uid,
+            "action": "remove_expired"
+        }
+        
+        response = requests.post(url, json=payload, timeout=5)
+        
+        print(f"response request status: {response.status_code}")
+
+        if response.status_code == 200:
+            print(f"✅ Successfully sent remove request to {room_ip} for UID {rfid_uid}")
+            return True
+        else:
+            print(f"❌ Failed to send remove request to {room_ip}: HTTP {response.status_code}")
+            return False
+            
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Error sending remove request to {room_ip}: {str(e)}")
+        return False
+
+def cleanup_expired_cache_entries():
+    """Clean up expired cache entries and notify ESP32 devices"""
+    try:
+        conn = get_db_connection()
+        
+        # Find all expired entries that are still marked as active
+        expired_entries = conn.execute('''
+            SELECT ec.*, r.ip_address, r.status as room_status, r.id as room_id
+            FROM esp32_cache ec
+            JOIN rooms r ON ec.room = r.room
+            WHERE expired_status = 'offline'
+            AND room_status = 'online'
+            AND r.ip_address IS NOT NULL
+            ORDER BY ec.room, ec.expires_at
+        ''').fetchall()
+        
+        if expired_entries:
+            print(f"🧹 Found {len(expired_entries)} expired cache entries to clean up")
+            
+            for entry in expired_entries:
+
+                cache_id = entry['id']
+                rfid_uid = entry['rfid_uid']
+                room = entry['room']
+                room_ip = entry['ip_address']
+                name = entry['name']
+                
+                print(f"📤 Sending remove request to ESP32 {room} ({room_ip}) for user {name} ({rfid_uid})")
+                
+                # Send remove request to ESP32
+                success = send_remove_user_to_esp32(room_ip, rfid_uid)
+                
+                if success:
+                    # Update the database to mark as cleaned up
+                    conn.execute('''DELETE
+                                 FROM esp32_cache
+                                 WHERE rfid_uid = ?
+                                 AND expired_status = 'offline'
+                                 ''', (rfid_uid,))
+                    
+                    print(f"✅ Removed cache entry id:{cache_id}")
+                else:
+                    print(f"❌ Failed to clean up cache entry id:{rfid_uid} success : {success}")
+        
+        conn.commit()
+        conn.close()
+        
+        if expired_entries:
+            print(f"🧹 Cache cleanup completed: {len(expired_entries)} entries processed")
+        
+    except Exception as e:
+        print(f"❌ Error in cleanup_expired_cache_entries: {str(e)}")
 
 @app.route('/')
 def dashboard():
@@ -390,7 +527,6 @@ def check_esp32_access():
             'access_granted': False,
             'success': False
         }), 500
-        return jsonify({'error': str(e), 'access_granted': False}), 500
 
 @app.route('/api/esp32/cleanup_cache', methods=['POST'])
 def cleanup_esp32_cache():
@@ -954,12 +1090,13 @@ def clear_esp32_cache():
 
 @app.route('/api/admin/esp32_cache_with_status_update', methods=['GET'])
 def get_esp32_cache_with_status_update():
-    """Get ESP32 cache and update room status for expired entries"""
+    """Get ESP32 cache, update room status for expired entries, and persist expired_status"""
     try:
         conn = get_db_connection()
+        cursor = conn.cursor()
         
         # Step 1: Get all cache entries with room information
-        cache_entries = conn.execute('''
+        cache_entries = cursor.execute('''
             SELECT ec.*, r.ip_address, r.status as room_status, r.id as room_id
             FROM esp32_cache ec
             JOIN rooms r ON ec.room = r.room
@@ -967,32 +1104,28 @@ def get_esp32_cache_with_status_update():
         ''').fetchall()
         
         cache_list = []
-        
-        # Step 2: Check each entry and set expired_status
+        current_time = datetime.now()
+
         for entry in cache_entries:
-            # Get current time as datetime object
-            current_time = datetime.now()
-            
-            # Parse end_time to datetime object (handle ISO format)
             end_time_str = entry['expires_at']
             try:
-                # Try ISO format first (2025-06-10T14:50:00)
                 if 'T' in end_time_str:
                     end_time = datetime.fromisoformat(end_time_str.replace('T', ' '))
                 else:
-                    # Standard format (2025-06-10 14:50:00)
                     end_time = datetime.strptime(end_time_str, '%Y-%m-%d %H:%M:%S')
             except ValueError:
-                # Fallback: assume it's expired if we can't parse
                 end_time = datetime.min
-            
-            # Check if current time > end time
-            if current_time > end_time:
-                expired_status = 'offline'  # true condition
-            else:
-                expired_status = 'online'   # false condition
-            
-            # Add to cache list with expired_status
+
+            # Determine expired status
+            expired_status = 'offline' if current_time > end_time else 'online'
+
+            # Update expired_status in the database if necessary
+            cursor.execute('''
+                UPDATE esp32_cache
+                SET expired_status = ?
+                WHERE id = ?
+            ''', (expired_status, entry['id']))
+
             cache_list.append({
                 'id': entry['id'],
                 'room': entry['room'],
@@ -1004,28 +1137,45 @@ def get_esp32_cache_with_status_update():
                 'room_status': entry['room_status'],
                 'expired_status': expired_status
             })
-        
+
+        conn.commit()
         conn.close()
-        
+
         return jsonify({
             'cache_entries': cache_list,
-            'message': f'Retrieved {len(cache_list)} cache entries with expiration status'
+            'message': f'Retrieved and updated {len(cache_list)} cache entries with expiration status'
         })
-        
+
     except Exception as e:
         logger.error(f"Error in get_esp32_cache_with_status_update: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/admin/cleanup_cache', methods=['POST'])
+def manual_cleanup_cache():
+    """Manually trigger cache cleanup"""
+    try:
+        cleanup_expired_cache_entries()
+        return jsonify({
+            'success': True,
+            'message': 'Cache cleanup completed successfully'
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'message': f'Cache cleanup failed: {str(e)}'
+        }), 500
 
 if __name__ == '__main__':
     # Initialize database
     init_database()
-    
+
     print("🚀 Starting Room Access Control Server...")
     print("📊 Admin Dashboard: http://localhost:5000")
     print("📝 Student Request Page: http://localhost:5000/request")
     print("🔌 API Endpoints: http://localhost:5000/api/")
     print("💾 Database: room_access.db")
     
+    background_tasks()
+
     # Run the Flask application
     app.run(host='0.0.0.0', port=5000, debug=True)

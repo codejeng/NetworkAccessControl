@@ -33,7 +33,7 @@ end
 # Unset irrelevant variables.
 deactivate nondestructive
 
-set -gx VIRTUAL_ENV /home/codejeng/Desktop/NetworkProjects/NetworkAccessControl/venv
+set -gx VIRTUAL_ENV /home/codejeng/Desktop/NetworkAccessControl/venv
 
 set -gx _OLD_VIRTUAL_PATH $PATH
 set -gx PATH "$VIRTUAL_ENV/"bin $PATH
