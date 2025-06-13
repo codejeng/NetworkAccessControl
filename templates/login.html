@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Login - Room Access Control</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .login-container {
+            background: white;
+            padding: 2rem;
+            border-radius: 10px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+            width: 100%;
+            max-width: 400px;
+        }
+
+        .login-header {
+            text-align: center;
+            margin-bottom: 2rem;
+        }
+
+        .login-header h1 {
+            color: #333;
+            font-size: 1.8rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .login-header p {
+            color: #666;
+            font-size: 0.9rem;
+        }
+
+        .form-group {
+            margin-bottom: 1.5rem;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 0.5rem;
+            font-weight: 500;
+            color: #333;
+        }
+
+        .form-control {
+            width: 100%;
+            padding: 0.75rem;
+            border: 2px solid #e0e0e0;
+            border-radius: 6px;
+            font-size: 1rem;
+            transition: border-color 0.3s ease;
+        }
+
+        .form-control:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        .btn-login {
+            width: 100%;
+            padding: 0.75rem;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 1rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: transform 0.2s ease;
+        }
+
+        .btn-login:hover {
+            transform: translateY(-2px);
+        }
+
+        .btn-login:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .alert {
+            padding: 0.75rem;
+            border-radius: 6px;
+            margin-bottom: 1rem;
+            text-align: center;
+        }
+
+        .alert-danger {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
+        .alert-success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            margin-top: 1rem;
+            color: #666;
+        }
+
+        .login-icon {
+            font-size: 3rem;
+            margin-bottom: 1rem;
+        }
+
+        @media (max-width: 480px) {
+            .login-container {
+                margin: 1rem;
+                padding: 1.5rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <div class="login-header">
+            <div class="login-icon">🔐</div>
+            <h1>Admin Login</h1>
+            <p>Room Access Control System</p>
+        </div>
+
+        <!-- Flash messages -->
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ 'danger' if category == 'error' else category }}">
+                        {{ message }}
+                    </div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        <form method="POST" id="loginForm">
+            <div class="form-group">
+                <label for="username">👤 Username</label>
+                <input type="text" id="username" name="username" class="form-control" required placeholder="Enter your username" value="{{ request.form.username }}">
+            </div>
+
+            <div class="form-group">
+                <label for="password">🔒 Password</label>
+                <input type="password" id="password" name="password" class="form-control" required placeholder="Enter your password">
+            </div>
+
+            <button type="submit" class="btn-login" id="loginBtn">
+                🚀 Login to Dashboard
+            </button>
+
+            <div id="loginLoading" class="loading">
+                🔄 Authenticating...
+            </div>
+        </form>
+    </div>
+
+    <script>
+        document.getElementById('loginForm').addEventListener('submit', function() {
+            const loginBtn = document.getElementById('loginBtn');
+            const loginLoading = document.getElementById('loginLoading');
+            
+            // Show loading state
+            loginBtn.disabled = true;
+            loginBtn.textContent = 'Authenticating...';
+            loginLoading.style.display = 'block';
+        });
+    </script>
+</body>
+</html>

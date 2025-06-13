@@ -534,6 +534,63 @@
     </div>
 
     <script>
+      // Authentication check
+      function checkAuth() {
+        const token = localStorage.getItem('adminToken');
+        if (!token) {
+          window.location.href = '/admin/login';
+          return false;
+        }
+
+        return token
+      }
+
+      // Verify token with server
+      async function verifyToken() {
+        const token = await checkAuth();
+        if (!token) return false;
+
+        try {
+          const response = await fetch('/api/admin/verify', {
+            headers: {
+              'Authorization': `Bearer ${token}`
+            }
+          });
+
+          if (!response.ok) {
+            throw new Error('Token invalid');
+          }
+
+          return true;
+        } catch (error) {
+          console.error('Token verification failed:', erorr);
+          localStorage.removeItem('adminToken');
+          localStorage.removeItem('adminUser');
+          window.location.href = '/admin/login';
+          return false;
+        }
+      }
+
+      // Add authorization header to all API requests
+      function getAuthHeaders() {
+        const token = localStorage.getItem('adminToken');
+        return {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        }
+      }
+
+      // Logout function
+      function logout() {
+        if (confirm('Are you sure you want to logout?')) {
+          response = fetch('/admin/logout')
+
+          localStorage.removeItem('adminToken');
+          localStorage.removeItem('adminUser');
+          window.location.href = '/admin/login';
+        }
+      }
+
       // Global variables
       let currentTab = "users";
 
@@ -545,7 +602,24 @@
       }
 
       // Initialize dashboard
-      document.addEventListener("DOMContentLoaded", function () {
+      document.addEventListener("DOMContentLoaded", async function () {
+        // const isAuthenicated = await verifyToken();
+        // if (!isAuthenicated) {
+        //   return;
+        // }
+
+        const header = document.querySelector('.header h1');
+        const adminUser = localStorage.getItem('adminUser') || 'Admin';
+        header.innerHTML = `
+            🏢 Room Access Control System - Admin Dashboard
+            <div style="float: right; font-size: 0.9rem; font-weight: normal;">
+                👤 ${adminUser} | 
+                <button onclick="logout()" style="background: rgba(255,255,255,0.2); color: white; border: 1px solid rgba(255,255,255,0.3); padding: 1rem 0.75rem; border-radius: 4px; cursor: pointer; font-size: 0.8rem;">
+                    🚪 Logout
+                </button>
+            </div>
+        `;
+
         loadDashboard();
 
         // Auto-refresh every 30 seconds
@@ -567,7 +641,15 @@
       // Load statistics
       async function loadStats() {
         try {
-          const response = await fetch("/api/admin/stats");
+          const response = await fetch("/api/admin/stats", {
+            headers: getAuthHeaders()
+          });
+
+          if (response.status === 401) {
+            window.location.href('/admin/login');
+            return;
+          }
+
           const data = await response.json();
 
           if (response.ok) {
@@ -599,7 +681,15 @@
         content.classList.add("hidden");
 
         try {
-          const response = await fetch("/api/admin/requests");
+          const response = await fetch("/api/admin/requests", {
+            headers: getAuthHeaders()
+          });
+
+          if (response.status === 401) {
+            window.location.href = '/admin/login'
+            return;
+          }
+
           const data = await response.json();
 
           if (response.ok) {
@@ -673,6 +763,12 @@
 
         try {
           const response = await fetch("/api/admin/users");
+
+          if (response.status === 401) {
+            window.location.href = '/admin/login'
+            return;
+          }
+
           const data = await response.json();
 
           if (response.ok) {
@@ -721,6 +817,12 @@
 
         try {
           const response = await fetch("/api/admin/rooms");
+
+          if (response.status === 401) {
+            window.location.href = '/admin/login'
+            return;
+          }
+
           const data = await response.json();
 
           if (response.ok) {
@@ -772,6 +874,12 @@
 
         try {
           const response = await fetch("/api/admin/esp32_cache");
+
+          if (response.status === 401) {
+            window.location.href = '/admin/login'
+            return;
+          }
+
           const data = await response.json();
 
           if (response.ok) {
@@ -826,15 +934,18 @@
             `/api/admin/requests/${requestId}/approve`,
             {
               method: "PUT",
-              headers: {
-                "Content-Type": "application/json",
-              },
+              headers: getAuthHeaders(),
               body: JSON.stringify({
                 approve: approve,
-                admin_name: "Admin Dashboard",
+                admin_name: localStorage.getItem('adminUser') || 'Admin Dashboard',
               }),
             }
           );
+
+          if (response.status === 401) {
+            window.location.href = '/admin/login';
+            return;
+          }
 
           const data = await response.json();
 
@@ -871,15 +982,18 @@
           try {
             const response = await fetch("/api/admin/users", {
               method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-              },
+              headers: getAuthHeaders(),
               body: JSON.stringify({
                 rfid_uid: uid,
                 name: name,
                 role: role,
               }),
             });
+
+            if (response.status === 401) {
+              window.location.href = '/admin/login';
+              return;
+            }
 
             const data = await response.json();
 
@@ -1001,6 +1115,11 @@
                 }
             });
 
+            if (response.status === 401) {
+              window.location.href('/admin/login');
+              return;
+            }
+
             const data = await response.json();
 
             if (response.ok) {
@@ -1027,6 +1146,11 @@
                     'Content-Type': 'application/json'
                 }
             });
+
+            if (response.status === 401) {
+              window.location.href('/admin/login');
+              return;
+            }
 
             const data = await response.json();
 

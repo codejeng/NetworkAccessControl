@@ -1,6 +1,8 @@
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template, session, redirect, url_for, flash
+from functools import wraps
+import hashlib
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 import threading
 import time
@@ -10,6 +12,14 @@ app = Flask(__name__)
 
 # Database configuration
 DATABASE = 'room_access.db'
+
+app.secret_key = 'NACS'
+
+ADMIN_CREDENTIALS = {
+    "admin": "admin123",
+}
+
+SESSION_TIMEOUT = timedelta(hours=24)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -113,6 +123,44 @@ def get_db_connection():
     conn = sqlite3.connect(DATABASE)
     conn.row_factory = sqlite3.Row
     return conn
+
+# Authentication functions
+def login_required(f):
+    """Decorator to require authentication for routes"""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'admin_user' not in session:
+            return redirect(url_for('admin_login'))
+        
+        # Check session timeout
+        if 'login_time' in session:
+            login_time = datetime.fromisoformat(session['login_time'])
+            if datetime.now() - login_time > SESSION_TIMEOUT:
+                session.clear()
+                flash('Session expired. Please login again.', 'error')
+                return redirect(url_for('admin_login'))
+        
+        return f(*args, **kwargs)
+    return decorated_function
+
+# API authentication decorator (for AJAX requests)
+def api_login_required(f):
+    """Decorator for API endpoints that require authentication"""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'admin_user' not in session:
+            return jsonify({'error': 'Authentication required'}), 401
+        
+        # Check session timeout
+        if 'login_time' in session:
+            login_time = datetime.fromisoformat(session['login_time'])
+            if datetime.now() - login_time > SESSION_TIMEOUT:
+                session.clear()
+                return jsonify({'error': 'Session expired'}), 401
+        
+        return f(*args, **kwargs)
+    return decorated_function
+
 
 def background_tasks(update_interval=10, cleanup_interval=10):
     """Start background threads for updating expired statuses and cleaning up expired cache"""
@@ -309,9 +357,9 @@ def cleanup_expired_cache_entries():
         print(f"❌ Error in cleanup_expired_cache_entries: {str(e)}")
 
 @app.route('/')
-def dashboard():
+def Home():
     """Admin dashboard for managing room access"""
-    return render_template('dashboard.html')
+    return render_template('home.html')
 
 @app.route('/request')
 def request_page():
@@ -712,6 +760,7 @@ def get_student_requests(name):
 # ================== ADMIN API ENDPOINTS ==================
 
 @app.route('/api/admin/requests', methods=['GET'])
+@api_login_required
 def get_all_requests():
     """Get all room access requests"""
     try:
@@ -746,6 +795,7 @@ def get_all_requests():
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/admin/requests/<int:request_id>/approve', methods=['PUT'])
+@api_login_required
 def approve_request(request_id):
     """Approve or deny a room access request"""
     try:
@@ -779,6 +829,7 @@ def approve_request(request_id):
         return jsonify({'error': str(e), 'success': False}), 500
 
 @app.route('/api/admin/users', methods=['GET', 'POST'])
+@api_login_required
 def manage_users():
     """Get all users or add new user"""
     if request.method == 'GET':
@@ -843,6 +894,7 @@ def manage_users():
             return jsonify({'error': str(e), 'success': False}), 500
 
 @app.route('/api/admin/rooms', methods=['GET'])
+@api_login_required
 def get_rooms():
     """Get all registered rooms"""
     try:
@@ -871,6 +923,7 @@ def get_rooms():
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/admin/esp32_cache', methods=['GET'])
+@api_login_required
 def get_esp32_cache_updated():
     """Get current ESP32 cache status with expired_status field"""
     try:
@@ -967,6 +1020,7 @@ def get_access_logs():
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/admin/stats', methods=['GET'])
+@api_login_required
 def get_admin_stats():
     """Get dashboard statistics"""
     try:
@@ -1016,6 +1070,7 @@ def get_admin_stats():
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/admin/requests/clear', methods=['DELETE'])
+@api_login_required
 def clear_all_requests():
     # Clear all room access requests from the database
 
@@ -1055,6 +1110,7 @@ def clear_all_requests():
         }), 500
 
 @app.route('/api/admin/esp32_cache/clear', methods=['DELETE'])
+@api_login_required
 def clear_esp32_cache():
     """Clear all ESP32 cache entries from the database"""
     try:
@@ -1179,12 +1235,66 @@ def manual_cleanup_cache():
             'message': f'Cache cleanup failed: {str(e)}'
         }), 500
 
+# Authentication routes
+@app.route('/admin/login', methods=['GET', 'POST'])
+def admin_login():
+    """Admin login page and handler"""
+    if request.method == 'POST':
+        username = request.form.get('username', '').strip()
+        password = request.form.get('password', '').strip()
+        
+        if not username or not password:
+            flash('Username and password are required', 'error')
+            return render_template('login.html')
+        
+        # Check credentials
+        if username in ADMIN_CREDENTIALS and ADMIN_CREDENTIALS[username] == password:
+            session['admin_user'] = username
+            session['login_time'] = datetime.now().isoformat()
+            session.permanent = True
+            
+            flash('Login successful!', 'success')
+            return redirect(url_for('admin_dashboard'))
+        else:
+            flash('Invalid username or password', 'error')
+            return render_template('login.html')
+    
+    # If already logged in, redirect to dashboard
+    if 'admin_user' in session:
+        return redirect(url_for('admin_dashboard'))
+    
+    return render_template('login.html')
+
+@app.route('/admin/logout')
+@login_required
+def admin_logout():
+    """Admin logout"""
+    username = session.get('admin_user', 'Unknown')
+    session.clear()
+
+    return render_template('login.html')
+    flash(f'You have been logged out successfully, {username}!', 'success')
+
+@app.route('/admin/dashboard')
+@login_required
+def admin_dashboard():
+    """Admin dashboard page"""
+    admin_user = session.get('admin_user', 'Admin')
+    return render_template('dashboard.html', admin_user=admin_user)
+
+# Redirect root admin route to login
+@app.route('/admin')
+def admin_root():
+    """Redirect /admin to login"""
+    return redirect(url_for('admin_login'))
+
+
 if __name__ == '__main__':
     # Initialize database
     init_database()
 
     print("🚀 Starting Room Access Control Server...")
-    print("📊 Admin Dashboard: http://localhost:5000")
+    print("📊 Admin Dashboard: http://localhost:5000/admin")
     print("📝 Student Request Page: http://localhost:5000/request")
     print("🔌 API Endpoints: http://localhost:5000/api/")
     print("💾 Database: room_access.db")
