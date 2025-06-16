@@ -11,7 +11,7 @@ import requests
 app = Flask(__name__)
 
 # Database configuration
-DATABASE = 'room_access.db'
+DATABASE = 'database.db'
 
 app.secret_key = 'NACS'
 
@@ -41,6 +41,23 @@ def init_database():
         )
     ''')
     
+    # Users table - stores all which users has registered
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS users_reg (
+        id INTEGER PRIMARY KEY,
+        uuid TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        first_name TEXT NOT NULL,
+        last_name TEXT NOT NULL,
+        name TEXT NOT NULL,
+        email TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'student',
+        is_deleted BOOLEAN NOT NULL DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    """)
+
     # Requests table - stores room access requests
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS requests (
@@ -113,7 +130,22 @@ def init_database():
             sample_users
         )
         print("✅ Sample users added to database")
+
+    cursor.execute('SELECT COUNT(*) FROM users_reg')
+    if cursor.fetchone()[0] == 0:
+        sample_users = [
+            ('EA20B1CC', '6630406711', 'Apichet', 'Thamraksa', 'Apichet Thamraksa','apichet.t@kkumail.com', 'student'),
+            ('631FBF15', '6630406712', 'Testing', 'Name', 'Testing Name', 'test@kkumail.com', 'student'),
+            ('C3228B12', '6630406713', 'Testing', 'Name2', 'Testing Name2', 'test@kku.ac.th', 'admin'),
+        ]
+        
+        cursor.executemany(
+            'INSERT INTO users_reg (uuid, user_id, first_name, last_name, name, email, role) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            sample_users
+        )
+        print("✅ Sample users added to database")
     
+
     conn.commit()
     conn.close()
     print("✅ Database initialized successfully")
@@ -173,9 +205,9 @@ def background_tasks(update_interval=10, cleanup_interval=10):
                 cursor = conn.cursor()
                 
                 cache_entries = cursor.execute('''
-                                               SELECT ec.id, ec.name, users.role, ec.expires_at
+                                               SELECT ec.id, ec.name, users_reg.role, ec.expires_at
                                                FROM esp32_cache ec
-                                               JOIN users ON ec.name = users.name
+                                               JOIN users_reg ON ec.name = users_reg.name
                                                ''').fetchall()
                 current_time = datetime.now()
 
@@ -449,7 +481,9 @@ def check_esp32_access():
         
         # Check if user exists in the database
         user = conn.execute('''
-            SELECT id, rfid_uid, name, role FROM users WHERE rfid_uid = ?
+            SELECT id, uuid, name, role 
+            FROM users_reg 
+            WHERE uuid = ?
         ''', (rfid_uid,)).fetchone()
         
         if not user:
@@ -468,7 +502,7 @@ def check_esp32_access():
                 'message': 'Unknown RFID card',
                 'cache_user': False,
                 'success': True,
-                'debug_info': f'RFID {rfid_uid} not found in users table'
+                'debug_info': f'RFID {rfid_uid} not found in users_reg table'
             })
         
         print(f"[DEBUG] Found user: {user['name']} ({user['role']})")
@@ -483,7 +517,7 @@ def check_esp32_access():
             SELECT r.id, r.uid, r.start_time, r.end_time, r.room, r.access, 
                    r.approved_by, r.approved_at, u.name
             FROM requests r
-            JOIN users u ON r.uid = u.rfid_uid
+            JOIN users_reg u ON r.uid = u.uuid
             WHERE r.uid = ? 
             AND r.room = ? 
             AND r.access = 1
@@ -536,6 +570,7 @@ def check_esp32_access():
             ''', (rfid_uid, room)).fetchall()
             
             debug_info = f"Found {len(debug_requests)} total requests for this user/room. "
+
             if debug_requests:
                 for req in debug_requests:
                     debug_info += f"ID:{req['id']} ({req['start_time']} to {req['end_time']}, approved:{req['access']}) "
@@ -600,7 +635,8 @@ def cleanup_esp32_cache():
         
         # Get current valid cache entries
         current_cache = conn.execute('''
-            SELECT rfid_uid, name, expires_at FROM esp32_cache
+            SELECT rfid_uid, name, expires_at 
+            FROM esp32_cache
             WHERE room = ? AND datetime(expires_at) >= datetime('now')
             ORDER BY expires_at ASC
         ''', (room,)).fetchall()
@@ -646,7 +682,7 @@ def submit_request():
         conn = get_db_connection()
         
         # Find user by name
-        user = conn.execute('SELECT * FROM users WHERE name = ?', (name,)).fetchone()
+        user = conn.execute('SELECT * FROM users_reg WHERE name = ?', (name,)).fetchone()
         if not user:
             conn.close()
             return jsonify({'error': 'ไม่พบชื่อผู้ใช้งาน', 'success': False}), 404
@@ -697,12 +733,12 @@ def submit_request():
             conn.execute('''
                 INSERT INTO requests (uid, name, start_time, end_time, room, access, approved_by)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (user['rfid_uid'], user['name'], start_time_iso, end_time_iso, room, bool(auto_approve), 'Auto Approved'))
+            ''', (user['uuid'], user['name'], start_time_iso, end_time_iso, room, bool(auto_approve), 'Auto Approved'))
         else:
             conn.execute('''
                 INSERT INTO requests (uid, name, start_time, end_time, room)
                 VALUES (?, ?, ?, ?, ?)
-            ''', (user['rfid_uid'], user['name'], start_time_iso, end_time_iso, room))
+            ''', (user['uuid'], user['name'], start_time_iso, end_time_iso, room))
         
         conn.commit()
         conn.close()
@@ -730,7 +766,7 @@ def get_student_requests(name):
         conn = get_db_connection()
         requests = conn.execute('''
             SELECT r.*, u.name FROM requests r
-            JOIN users u ON r.uid = u.rfid_uid
+            JOIN users_reg u ON r.uid = u.uuid
             WHERE u.name = ?
             ORDER BY r.timestamp DESC
         ''', (name,)).fetchall()
@@ -766,8 +802,9 @@ def get_all_requests():
     try:
         conn = get_db_connection()
         requests = conn.execute('''
-            SELECT r.*, u.name, u.role FROM requests r
-            JOIN users u ON r.uid = u.rfid_uid
+            SELECT r.*, u.name, u.role 
+            FROM requests r
+            JOIN users_reg u ON r.uid = u.uuid
             ORDER BY r.timestamp DESC
         ''').fetchall()
         
@@ -836,7 +873,7 @@ def manage_users():
         try:
             conn = get_db_connection()
             users = conn.execute('''
-                SELECT * FROM users ORDER BY created_at DESC
+                SELECT * FROM users_reg ORDER BY created_at DESC
             ''').fetchall()
             conn.close()
             
@@ -844,7 +881,7 @@ def manage_users():
             for user in users:
                 users_list.append({
                     'id': user['id'],
-                    'rfid_uid': user['rfid_uid'],
+                    'rfid_uid': user['uuid'],
                     'name': user['name'],
                     'role': user['role'],
                     'created_at': user['created_at']
@@ -872,7 +909,7 @@ def manage_users():
             
             # Check if RFID already exists
             existing = conn.execute(
-                'SELECT id FROM users WHERE rfid_uid = ?', (rfid_uid,)
+                'SELECT id FROM users_reg WHERE uuid = ?', (rfid_uid,)
             ).fetchone()
             
             if existing:
@@ -881,7 +918,7 @@ def manage_users():
             
             # Insert new user
             conn.execute('''
-                INSERT INTO users (rfid_uid, name, role)
+                INSERT INTO users_reg (uuid, name, role)
                 VALUES (?, ?, ?)
             ''', (rfid_uid, name, role))
             
@@ -934,7 +971,7 @@ def get_esp32_cache_updated():
             SELECT ec.*, u.role, r.ip_address, r.status as room_status 
             FROM esp32_cache ec
             JOIN rooms r ON ec.room = r.room
-            JOIN users u ON ec.name = u.name
+            JOIN users_reg u ON ec.name = u.name
             ORDER BY ec.room, ec.expires_at
         ''').fetchall()
         
@@ -974,7 +1011,7 @@ def get_esp32_cache_updated():
                 'created_at': entry['created_at'],
                 'room_ip': entry['ip_address'],
                 'room_status': entry['room_status'],
-                'expired_status': expired_status  # New field with default 'online'
+                'expired_status': expired_status 
             })
         
         return jsonify({
@@ -993,8 +1030,9 @@ def get_access_logs():
         
         conn = get_db_connection()
         logs = conn.execute('''
-            SELECT al.*, u.name, u.role FROM access_logs al
-            LEFT JOIN users u ON al.rfid_uid = u.rfid_uid
+            SELECT al.*, u.name, u.role 
+            FROM access_logs al
+            LEFT JOIN users_reg u ON al.rfid_uid = u.uuid
             ORDER BY al.timestamp DESC
             LIMIT ?
         ''', (limit,)).fetchall()
@@ -1029,7 +1067,9 @@ def get_admin_stats():
         # Total users by role
         stats = {}
         roles = conn.execute('''
-            SELECT role, COUNT(*) as count FROM users GROUP BY role
+            SELECT role, COUNT(*) as count 
+            FROM users_reg 
+            GROUP BY role
         ''').fetchall()
         
         for role in roles:
@@ -1166,7 +1206,7 @@ def get_esp32_cache_with_status_update():
             SELECT ec.*, u.role, r.ip_address, r.status as room_status, r.id as room_id
             FROM esp32_cache ec
             JOIN rooms r ON ec.room = r.room
-            JOIN users u ON ec.name = u.name
+            JOIN users_reg u ON ec.name = u.name
             ORDER BY ec.room, ec.expires_at
         ''').fetchall()
         
@@ -1272,8 +1312,8 @@ def admin_logout():
     username = session.get('admin_user', 'Unknown')
     session.clear()
 
-    return render_template('login.html')
     flash(f'You have been logged out successfully, {username}!', 'success')
+    return render_template('login.html')
 
 @app.route('/admin/dashboard')
 @login_required
