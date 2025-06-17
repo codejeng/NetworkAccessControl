@@ -1,6 +1,5 @@
 from flask import Flask, request, jsonify, render_template, session, redirect, url_for, flash
 from functools import wraps
-import hashlib
 import sqlite3
 from datetime import datetime, timedelta
 import logging
