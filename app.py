@@ -664,6 +664,11 @@ def cleanup_esp32_cache():
 
 # ================== STUDENT API ENDPOINTS ==================
 
+@app.route('/user/dashboard')
+def user_dashboard():
+    """User dashboard page"""
+    return render_template('userDashboard.html')
+
 @app.route('/api/student/submit_request', methods=['POST'])
 def submit_request():
     """Student submits room access request"""
