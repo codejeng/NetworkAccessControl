@@ -893,7 +893,6 @@ def manage_users():
                     'role': user['role'],
                     'created_at': user['created_at']
                 })
-            
             return jsonify({'users': users_list})
             
         except Exception as e:
@@ -902,21 +901,25 @@ def manage_users():
     elif request.method == 'POST':
         try:
             data = request.get_json()
-            rfid_uid = data.get('rfid_uid', '').upper().strip()
-            name = data.get('name', '').strip()
+            uuid = data.get('uuid', '').upper().strip()
+            user_id = data.get('user_id', '').upper().strip()
+            first_name = data.get('first_name', '').strip()
+            last_anme = data.get('last_name', '').strip()
+            name = data.get('name', '')
+            email = data.get('email', '').strip()
             role = data.get('role', 'student').strip().lower()
             
-            if not rfid_uid or not name:
+            if not uuid or not name:
                 return jsonify({'error': 'RFID UID and name are required', 'success': False}), 400
             
-            if role not in ['student', 'teacher', 'admin']:
+            if role not in ['student',  'admin']:
                 return jsonify({'error': 'Invalid role', 'success': False}), 400
             
             conn = get_db_connection()
             
             # Check if RFID already exists
             existing = conn.execute(
-                'SELECT id FROM users_reg WHERE uuid = ?', (rfid_uid,)
+                'SELECT id FROM users_reg WHERE uuid = ?', (uuid,)
             ).fetchone()
             
             if existing:
@@ -925,9 +928,9 @@ def manage_users():
             
             # Insert new user
             conn.execute('''
-                INSERT INTO users_reg (uuid, name, role)
-                VALUES (?, ?, ?)
-            ''', (rfid_uid, name, role))
+                INSERT INTO users_reg (uuid, user_id, first_name, last_name, name, email, role)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (uuid, user_id, first_name, last_anme, name, email, role))
             
             conn.commit()
             conn.close()

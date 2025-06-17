@@ -433,24 +433,43 @@
             <div class="section-content">
               <div id="addUserAlert"></div>
               <form id="addUserForm">
-                <div class="form-row">
+                <div class="form-column">
+
                   <div class="form-group">
                     <label>RFID UID</label>
-                    <input type="text" class="form-control" id="newUserUID" required placeholder="e.g., EA20B1CC"
+                    <input type="text" class="form-control" id="newUserUID" required placeholder="e.g., ABCDE123"
                       maxlength="16" />
                   </div>
+
                   <div class="form-group">
-                    <label>Full Name</label>
-                    <input type="text" class="form-control" id="newUserName" required placeholder="e.g., John Doe" />
+                    <label>รหัสนักศึกษา/รหัสประจำตัวอาจารย์</label>
+                    <input type="text" class="form-control" id="newUserUserID" required placeholder="e.g., (6630401234) / (1949/2568)" />
                   </div>
+
+                  <div class="form-group">
+                    <label>ชื่อ</label>
+                    <input type="text" class="form-control" id="newUserFirstName" required placeholder="e.g., John" />
+                  </div>
+
+                  <div class="form-group">
+                    <label>นามสกุล</label>
+                    <input type="text" class="form-control" id="newUserLastName" required placeholder="e.g., Doe" />
+                  </div>
+
+                  <div class="form-group">
+                    <label>Email</label>
+                    <input type="text" class="form-control" id="newUserEmail" required placeholder="e.g., John.d@kkumail.com/@kku.ac.th" />
+                  </div>
+
                 </div>
                 <div class="form-group">
-                  <label>Role</label>
+                  <label>สถานะ</label>
+
                   <select class="form-control" id="newUserRole" required>
                     <option value="student">Student</option>
-                    <option value="teacher">Teacher</option>
                     <option value="admin">Admin</option>
                   </select>
+                  
                 </div>
                 <button type="submit" class="btn btn-success">➕ Add User</button>
               </form>
@@ -967,14 +986,15 @@
         .addEventListener("submit", async function (e) {
           e.preventDefault();
 
-          const uid = document
-            .getElementById("newUserUID")
-            .value.trim()
-            .toUpperCase();
-          const name = document.getElementById("newUserName").value.trim();
+          const uuid = document.getElementById("newUserUID").value.trim().toUpperCase();
+          const user_id = document.getElementById("newUserUserID").value.trim();
+          const first_name = document.getElementById("newUserFirstName").value.trim();
+          const last_name = document.getElementById("newUserLastName").value.trim();
+          const name  = first_name + " " + last_name;
+          const email = document.getElementById("newUserEmail").value.trim();
           const role = document.getElementById("newUserRole").value;
 
-          if (!uid || !name) {
+          if (!uuid || !user_id || !first_name || !last_name || !name || !email || !role) {
             showAlert("addUserAlert", "Please fill in all fields", "danger");
             return;
           }
@@ -984,8 +1004,12 @@
               method: "POST",
               headers: getAuthHeaders(),
               body: JSON.stringify({
-                rfid_uid: uid,
+                uuid: uuid,
+                user_id: user_id,
+                first_name: first_name,
+                last_name: last_name,
                 name: name,
+                email: email,
                 role: role,
               }),
             });
