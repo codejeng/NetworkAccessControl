@@ -416,6 +416,7 @@
                   <thead>
                     <tr>
                       <th>RFID UID</th>
+                      <th>User_id</th>
                       <th>Name</th>
                       <th>Role</th>
                       <th>Created</th>
@@ -778,11 +779,10 @@
               const row = document.createElement("tr");
               row.innerHTML = `
                             <td><code>${user.rfid_uid}</code></td>
-                            <td>${user.name}</td>
-                            <td><span class="badge-${
-                              user.role
-                            }">${user.role.toUpperCase()}</span></td>
-                            <td>${formatDateTime(user.created_at)}</td>
+                            <td><code>${user.user_id}</code></td>
+                            <td><code>${user.name}</code></td>
+                            <td><code><span class="badge-${user.role}">${user.role.toUpperCase()}</span></code></td>
+                            <td><code>${formatDateTime(user.created_at)}</code></td>
                         `;
               tableBody.appendChild(row);
             });

@@ -669,23 +669,23 @@ def submit_request():
     """Student submits room access request"""
     try:
         data = request.get_json()
-        name = data.get('name', '').strip()
+        user_id = data.get('user_id', '').strip()
         start_date = data.get('start_date', '').strip()
         start_time = data.get('start_time', '').strip()
         end_date = data.get('end_date', '').strip()
         end_time = data.get('end_time', '').strip()
         room = data.get('room', '').strip()
         
-        if not all([name, start_date, start_time, end_date, end_time, room]):
+        if not all([user_id, start_date, start_time, end_date, end_time, room]):
             return jsonify({'error': 'All fields are required', 'success': False}), 400
         
         conn = get_db_connection()
         
         # Find user by name
-        user = conn.execute('SELECT * FROM users_reg WHERE name = ?', (name,)).fetchone()
+        user = conn.execute('SELECT * FROM users_reg WHERE user_id = ?', (user_id,)).fetchone()
         if not user:
             conn.close()
-            return jsonify({'error': 'ไม่พบชื่อผู้ใช้งาน', 'success': False}), 404
+            return jsonify({'error': 'ไม่พบรหัสประจำตัวของผู้ใช้งานในฐานข้อมูล', 'success': False}), 404
         
         # Check if room exists
         room_check = conn.execute('SELECT * FROM rooms WHERE room = ?', (room,)).fetchone()
@@ -761,19 +761,20 @@ def submit_request():
     except Exception as e:
         return jsonify({'error': str(e), 'success': False}), 500
 
-@app.route('/api/student/my_requests/<name>', methods=['GET'])
-def get_student_requests(name):
-    """Get all requests for a specific student by name"""
+@app.route('/api/student/my_requests/<user_id>', methods=['GET'])
+def get_student_requests(user_id):
+    """Get all requests for a specific student by user_id"""
     try:
-        name = name.strip()
+        user_id = user_id.strip()
         
         conn = get_db_connection()
         requests = conn.execute('''
-            SELECT r.*, u.name FROM requests r
+            SELECT r.*, u.name, u.user_id 
+            FROM requests r
             JOIN users_reg u ON r.uid = u.uuid
-            WHERE u.name = ?
+            WHERE u.user_id = ?
             ORDER BY r.timestamp DESC
-        ''', (name,)).fetchall()
+        ''', (user_id,)).fetchall()
         
         conn.close()
         
@@ -783,6 +784,7 @@ def get_student_requests(name):
                 'id': req['id'],
                 'uid': req['uid'],
                 'name': req['name'],
+                'user_id': req['user_id'],
                 'start_time': req['start_time'],
                 'end_time': req['end_time'],
                 'access': bool(req['access']),
@@ -886,6 +888,7 @@ def manage_users():
                 users_list.append({
                     'id': user['id'],
                     'rfid_uid': user['uuid'],
+                    'user_id': user['user_id'],
                     'name': user['name'],
                     'role': user['role'],
                     'created_at': user['created_at']

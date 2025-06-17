@@ -184,12 +184,12 @@
 
         <form id="requestForm">
             <div class="form-group">
-                <label for="name">Your Name</label>
-                <input type="text" id="name" name="name" placeholder="Enter your full name" required>
+                <label for="user_id">รหัสนักศึกษา</label>
+                <input type="text" id="user_id" name="user_id" placeholder="กรอกรหัสนักศึกษา/รหัสประจำตัว" required>
             </div>
 
             <div class="form-group">
-                <label for="room">Room</label>
+                <label for="room">ห้อง</label>
                 <select id="room" name="room" required>
                     <option value="">Select a room</option>
                     <option value="EN4401">EN4401 (Network Laboratory)</option>
@@ -201,22 +201,22 @@
             </div>
 
             <div class="form-group">
-                <label for="start_date">Start Date</label>
+                <label for="start_date">วันเริ่ม</label>
                 <input type="date" id="start_date" name="start_date" required>
             </div>
 
             <div class="form-group">
-                <label for="start_time">Start Time</label>
+                <label for="start_time">เวลาเริ่ม</label>
                 <input type="time" id="start_time" name="start_time" required>
             </div>
 
             <div class="form-group">
-                <label for="end_date">End Date</label>
+                <label for="end_date">วันสิ้นสุด</label>
                 <input type="date" id="end_date" name="end_date" required>
             </div>
 
             <div class="form-group">
-                <label for="end_time">End Time</label>
+                <label for="end_time">เวลาสิ้นสุด</label>
                 <input type="time" id="end_time" name="end_time" required>
             </div>
 
@@ -311,9 +311,9 @@
 
         // Load user requests
         async function loadMyRequests() {
-            const name = document.getElementById('name').value.trim();
+            const user_id = document.getElementById('user_id').value.trim();
             
-            if (!name) {
+            if (!user_id) {
                 showAlert('กรุณากรอกชื่อของคุณก่อน', 'error');
                 return;
             }
@@ -322,7 +322,7 @@
             container.innerHTML = '<div class="loading">Loading your requests...</div>';
 
             try {
-                const response = await fetch(`/api/student/my_requests/${encodeURIComponent(name)}`);
+                const response = await fetch(`/api/student/my_requests/${encodeURIComponent(user_id)}`);
                 const data = await response.json();
 
                 if (response.ok) {
@@ -380,7 +380,7 @@
             // Get form data
             const formData = new FormData(this);
             const data = {
-                name: formData.get('name'),
+                user_id: formData.get('user_id'),
                 start_date: formData.get('start_date'),
                 start_time: formData.get('start_time'),
                 end_date: formData.get('end_date'),
