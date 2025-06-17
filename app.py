@@ -688,11 +688,12 @@ def submit_request():
             return jsonify({'error': 'ไม่พบรหัสประจำตัวของผู้ใช้งานในฐานข้อมูล', 'success': False}), 404
         
         # Check if room exists
-        room_check = conn.execute('SELECT * FROM rooms WHERE room = ?', (room,)).fetchone()
-        if not room_check:
-            conn.close()
-            return jsonify({'error': 'ไม่พบห้องที่ท่านได้เลือกไว้', 'success': False}), 404
+        # room_check = conn.execute('SELECT * FROM rooms WHERE room = ?', (room,)).fetchone()
+        # if not room_check:
+        #     conn.close()
+        #     return jsonify({'error': 'ไม่พบห้องที่ท่านได้เลือกไว้', 'success': False}), 404
         
+
         # Parse and validate time format
         try:
             # Combine date and time to create datetime objects
@@ -721,23 +722,27 @@ def submit_request():
         end_time_iso = end_dt.isoformat()
 
         # Check auto approve_request room 
-        auto_approve = conn.execute('''
+        auto_approve_row = conn.execute('''
             SELECT auto_approve
             FROM rooms
             WHERE room = ?
         ''', (room,)).fetchone()
 
-        if auto_approve is not None:
-            print('auto approve:', bool(auto_approve[0]))
+        if auto_approve_row is not None:
+            auto_approve_value = auto_approve_row[0]
+            auto_approve = bool(auto_approve_value)
+            print('auto approve value from DB:', auto_approve_value)
+            print('auto approve bool:', auto_approve)
         else:
             print('Room not found or auto_approve is NULL')
+            auto_approve = False
         
         # Insert request
-        if bool(auto_approve[0]):
+        if auto_approve:
             conn.execute('''
                 INSERT INTO requests (uid, name, start_time, end_time, room, access, approved_by)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (user['uuid'], user['name'], start_time_iso, end_time_iso, room, bool(auto_approve[0]), 'Auto Approved'))
+            ''', (user['uuid'], user['name'], start_time_iso, end_time_iso, room, True, 'Auto Approved'))
         else:
             conn.execute('''
                 INSERT INTO requests (uid, name, start_time, end_time, room)

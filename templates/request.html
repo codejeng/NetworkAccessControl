@@ -184,7 +184,7 @@
 
         <form id="requestForm">
             <div class="form-group">
-                <label for="user_id">รหัสนักศึกษา</label>
+                <label for="user_id">รหัสนักศึกษา *(ไม่ต้องใส่ขีด)</label>
                 <input type="text" id="user_id" name="user_id" placeholder="กรอกรหัสนักศึกษา/รหัสประจำตัว" required>
             </div>
 
@@ -221,18 +221,29 @@
             </div>
 
             <button type="submit" class="submit-btn" id="submitBtn">
-                Submit Request
+                ส่งคำขอ
             </button>
         </form>
 
         <div class="my-requests">
-            <h3>📋 My Requests</h3>
-            <div id="requests-container" class="loading">
-                Enter your name and click "Load My Requests" to view your requests
-            </div>
+            <h3>📋 ตรวจสอบคำขอ</h3>
+
+            <form id="fromCheckRequests">
+                <div class="form-group">
+                    <label for="user_id_checker">รหัสนักศึกษา</label>
+                    <input type="text" id="user_id_checker" name="user_id_checker" placeholder="กรอกรหัสนักศึกษา/รหัสประจำตัว" required>
+                </div>
+            </form>
+
+            
             <button type="button" id="loadRequestsBtn" class="submit-btn" style="margin-top: 15px;">
-                Load My Requests
+                ยืนยัน
             </button>
+
+            <div id="requests-container" class="loading">
+                กรอกรหัสนักศึกษาแล้วกด "ยืนยัน" เพื่อดูคำขอของคุณ
+            </div>
+
         </div>
     </div>
 
@@ -311,10 +322,10 @@
 
         // Load user requests
         async function loadMyRequests() {
-            const user_id = document.getElementById('user_id').value.trim();
+            const user_id_checker = document.getElementById('user_id_checker').value.trim();
             
-            if (!user_id) {
-                showAlert('กรุณากรอกชื่อของคุณก่อน', 'error');
+            if (!user_id_checker) {
+                showAlert('กรุณากรอกรหัสนักศึกของคุณ', 'error');
                 return;
             }
 
@@ -322,7 +333,7 @@
             container.innerHTML = '<div class="loading">Loading your requests...</div>';
 
             try {
-                const response = await fetch(`/api/student/my_requests/${encodeURIComponent(user_id)}`);
+                const response = await fetch(`/api/student/my_requests/${encodeURIComponent(user_id_checker)}`);
                 const data = await response.json();
 
                 if (response.ok) {
