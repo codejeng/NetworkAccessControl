@@ -722,18 +722,22 @@ def submit_request():
 
         # Check auto approve_request room 
         auto_approve = conn.execute('''
-                    SELECT auto_approve
-                    FROM rooms
-                    WHERE room = ?
-                     ''', (room,))
-        print('auto approve: ', bool(auto_approve))
+            SELECT auto_approve
+            FROM rooms
+            WHERE room = ?
+        ''', (room,)).fetchone()
+
+        if auto_approve is not None:
+            print('auto approve:', bool(auto_approve[0]))
+        else:
+            print('Room not found or auto_approve is NULL')
         
         # Insert request
-        if bool(auto_approve):
+        if bool(auto_approve[0]):
             conn.execute('''
                 INSERT INTO requests (uid, name, start_time, end_time, room, access, approved_by)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (user['uuid'], user['name'], start_time_iso, end_time_iso, room, bool(auto_approve), 'Auto Approved'))
+            ''', (user['uuid'], user['name'], start_time_iso, end_time_iso, room, bool(auto_approve[0]), 'Auto Approved'))
         else:
             conn.execute('''
                 INSERT INTO requests (uid, name, start_time, end_time, room)
