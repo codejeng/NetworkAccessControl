@@ -687,7 +687,7 @@ def submit_request():
             conn.close()
             return jsonify({'error': 'ไม่พบรหัสประจำตัวของผู้ใช้งานในฐานข้อมูล', 'success': False}), 404
         
-        # Check if room exists
+        # Check if room exists -> change even thought aren't esp32 it can send request
         # room_check = conn.execute('SELECT * FROM rooms WHERE room = ?', (room,)).fetchone()
         # if not room_check:
         #     conn.close()
