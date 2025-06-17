@@ -809,6 +809,35 @@ def get_student_requests(user_id):
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/validate-user/<user_id>', methods=['GET'])
+def validate_user(user_id):
+    try:
+        # Check if user exists in your database
+        # Replace this with your actual database query
+        conn = get_db_connection()
+        user = conn.execute("SELECT * FROM users_reg WHERE user_id = ?", (user_id,)).fetchone()
+        
+        if user:
+            return jsonify({
+                "exists": True,
+                "user": {
+                    "student_id": user['user_id'],
+                    "name": user['name'],
+                    # Add other safe user data you want to return
+                }
+            }), 200
+        else:
+            return jsonify({
+                "exists": False,
+                "message": "User not found"
+            }), 404
+            
+    except Exception as e:
+        return jsonify({
+            "exists": False,
+            "error": str(e)
+        }), 500
+
 # ================== ADMIN API ENDPOINTS ==================
 
 @app.route('/api/admin/requests', methods=['GET'])

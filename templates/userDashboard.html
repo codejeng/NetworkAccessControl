@@ -500,10 +500,12 @@
         let currentStudentId = null;
 
         // Initialize the page
-        document.addEventListener('DOMContentLoaded', function() {
-            // Check if user is already logged in
-            const savedStudentId = localStorage.getItem('studentId');
-            if (savedStudentId) {
+        document.addEventListener('DOMContentLoaded', async function() {
+            // Check if user is already logged in and still valid
+            const isValidUser = await validateStoredUser();
+            
+            if (isValidUser) {
+                const savedStudentId = localStorage.getItem('studentId');
                 document.getElementById('studentId').value = savedStudentId;
                 login();
             }
@@ -527,14 +529,31 @@
             loginBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> กำลังเข้าสู่ระบบ...';
 
             try {
-                // First, try to get user requests to verify the student ID exists
-                const response = await fetch(`/api/student/my_requests/${studentId}`);
+                // First, validate if user exists in the system
+                const userValidationResponse = await fetch(`/api/validate-user/${studentId}`);
                 
-                if (!response.ok) {
-                    throw new Error('ไม่พบรหัสประจำตัวนักศึกษาในระบบ');
+                if (!userValidationResponse.ok) {
+                    if (userValidationResponse.status === 404) {
+                        throw new Error('ไม่พบรหัสประจำตัวนักศึกษาในระบบ กรุณาติดต่อผู้ดูแลระบบ');
+                    } else {
+                        throw new Error('ไม่สามารถตรวจสอบข้อมูลผู้ใช้ได้');
+                    }
                 }
 
-                const data = await response.json();
+                const userValidationData = await userValidationResponse.json();
+                
+                if (!userValidationData.exists) {
+                    throw new Error('ไม่พบรหัสประจำตัวนักศึกษาในระบบ กรุณาติดต่อผู้ดูแลระบบ');
+                }
+
+                // If user exists, then get their requests
+                const requestsResponse = await fetch(`/api/student/my_requests/${studentId}`);
+                
+                if (!requestsResponse.ok) {
+                    throw new Error('ไม่สามารถโหลดข้อมูลคำขอได้');
+                }
+
+                const requestsData = await requestsResponse.json();
                 
                 // Set current user info
                 currentStudentId = studentId;
@@ -543,7 +562,7 @@
                 localStorage.setItem('studentId', studentId);
                 
                 // Show dashboard
-                showDashboard(data.requests);
+                showDashboard(requestsData.requests, userValidationData.user);
                 
             } catch (error) {
                 showError(error.message || 'เกิดข้อผิดพลาดในการเข้าสู่ระบบ');
@@ -553,7 +572,7 @@
             }
         }
 
-        function showDashboard(requests) {
+        function showDashboard(requests, userData = null) {
             // Hide login section
             document.getElementById('loginSection').style.display = 'none';
             
@@ -564,11 +583,13 @@
             document.getElementById('userInfo').style.display = 'flex';
             document.getElementById('userStudentId').textContent = currentStudentId;
             
-            // Get user name from requests if available
-            if (requests.length > 0) {
+            // Set user name from userData if available, otherwise from requests
+            if (userData && userData.name) {
+                document.getElementById('userName').textContent = userData.name;
+            } else if (requests.length > 0 && requests[0].name) {
                 document.getElementById('userName').textContent = requests[0].name;
             } else {
-                document.getElementById('userName').textContent = 'ไม่พบข้อมูลชื่อ';
+                document.getElementById('userName').textContent = 'ผู้ใช้ระบบ';
             }
             
             // Update statistics
@@ -576,6 +597,28 @@
             
             // Update requests table
             updateRequestsTable(requests);
+        }
+
+        async function validateStoredUser() {
+            const savedStudentId = localStorage.getItem('studentId');
+            if (savedStudentId) {
+                try {
+                    const userValidationResponse = await fetch(`/api/validate-user/${savedStudentId}`);
+                    
+                    if (!userValidationResponse.ok || !(await userValidationResponse.json()).exists) {
+                        // User no longer exists in system, clear storage and show login
+                        localStorage.removeItem('studentId');
+                        return false;
+                    }
+                    
+                    return true;
+                } catch (error) {
+                    // On error, clear storage and show login
+                    localStorage.removeItem('studentId');
+                    return false;
+                }
+            }
+            return false;
         }
 
         function updateStatistics(requests) {
