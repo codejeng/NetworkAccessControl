@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>RFID Registered Users</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: "Segoe UI", Arial, sans-serif;
+        background: #f6f8fa;
+        color: #313131;
+        margin: 0;
+        padding: 20px;
+        min-height: 100vh;
+      }
+
+      h1 {
+        background: #023e8a;
+        color: #fff;
+        margin: 0 0 24px 0;
+        padding: 16px;
+        text-align: center;
+        border-bottom: 4px solid #0077b6;
+        font-size: 2.2rem;
+        letter-spacing: 2px;
+        border-radius: 8px 8px 0 0;
+      }
+
+      .container {
+        max-width: 1200px;
+        width: 100%;
+        margin: auto;
+        background: #fff;
+        padding: 24px;
+        border-radius: 12px;
+        box-shadow: 0 4px 32px rgba(31, 90, 165, 0.11);
+        overflow: hidden;
+      }
+
+      .btn-redirect {
+        display: inline-block;
+        background-color: #0077b6;
+        color: white;
+        padding: 12px 20px;
+        border-radius: 7px;
+        text-decoration: none;
+        font-weight: 600;
+        cursor: pointer;
+        margin-bottom: 20px;
+        transition: all 0.3s ease;
+        border: none;
+        font-size: 1rem;
+      }
+      
+      .btn-redirect:hover {
+        background-color: #023e8a;
+        transform: translateY(-1px);
+      }
+
+      .table-container {
+        overflow-x: auto;
+        margin: 0 -24px;
+        padding: 0 24px;
+      }
+
+      table {
+        border-collapse: collapse;
+        width: 100%;
+        box-shadow: 0 2px 10px rgba(49, 131, 201, 0.07);
+        background: #f9fbfc;
+        min-width: 800px;
+      }
+
+      th,
+      td {
+        border: 1px solid #deecf9;
+        padding: 12px 10px;
+        text-align: center;
+        font-size: 0.95rem;
+        word-wrap: break-word;
+        white-space: normal;
+      }
+
+      th {
+        background: #0077b6;
+        color: #fff;
+        letter-spacing: 1px;
+        font-weight: 600;
+        position: sticky;
+        top: 0;
+        z-index: 10;
+      }
+
+      tr:nth-child(even) {
+        background: #e9f5ff;
+      }
+
+      tr:hover {
+        background: #d4edda;
+        transition: background 0.2s;
+      }
+
+      /* Column widths for desktop */
+      th:nth-child(1), td:nth-child(1) { width: 8%; }
+      th:nth-child(2), td:nth-child(2) { width: 20%; }
+      th:nth-child(3), td:nth-child(3) { width: 12%; }
+      th:nth-child(4), td:nth-child(4) { width: 12%; }
+      th:nth-child(5), td:nth-child(5) { width: 12%; }
+      th:nth-child(6), td:nth-child(6) { width: 20%; }
+      th:nth-child(7), td:nth-child(7) { width: 8%; }
+      th:nth-child(8), td:nth-child(8) { width: 8%; }
+
+      .action-buttons {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        justify-content: center;
+      }
+
+      .action-link {
+        padding: 6px 12px;
+        border-radius: 6px;
+        font-weight: 500;
+        font-size: 0.85rem;
+        display: inline-block;
+        transition: all 0.2s;
+        text-decoration: none;
+        min-width: 50px;
+      }
+
+      .action-link.edit {
+        background: #e0f4ff;
+        color: #0077b6;
+        border: 1px solid #90caf9;
+      }
+      .action-link.edit:hover {
+        background: #0077b6;
+        color: #fff;
+        transform: translateY(-1px);
+      }
+
+      .action-link.delete {
+        background: #fff6f6;
+        color: #d90429;
+        border: 1px solid #ffb3b3;
+      }
+      .action-link.delete:hover {
+        background: #d90429;
+        color: #fff;
+        transform: translateY(-1px);
+      }
+
+      .no-users {
+        text-align: center;
+        padding: 40px 20px;
+        color: #666;
+        font-size: 1.1rem;
+        background: #f8f9fa;
+        border-radius: 8px;
+        margin-top: 20px;
+      }
+
+      /* Mobile Card Layout */
+      .mobile-cards {
+        display: none;
+      }
+
+      .user-card {
+        background: #fff;
+        border: 1px solid #deecf9;
+        border-radius: 8px;
+        margin-bottom: 16px;
+        padding: 16px;
+        box-shadow: 0 2px 8px rgba(31, 90, 165, 0.1);
+      }
+
+      .user-card .card-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 12px;
+        padding-bottom: 8px;
+        border-bottom: 1px solid #eee;
+      }
+
+      .user-card .card-id {
+        background: #0077b6;
+        color: white;
+        padding: 4px 8px;
+        border-radius: 4px;
+        font-weight: bold;
+        font-size: 0.9rem;
+      }
+
+      .user-card .card-actions {
+        display: flex;
+        gap: 8px;
+      }
+
+      .user-card .card-field {
+        margin-bottom: 8px;
+        display: flex;
+        align-items: flex-start;
+      }
+
+      .user-card .field-label {
+        font-weight: 600;
+        color: #0077b6;
+        min-width: 80px;
+        margin-right: 8px;
+      }
+
+      .user-card .field-value {
+        flex: 1;
+        word-break: break-all;
+      }
+
+      /* Tablet Styles */
+      @media screen and (max-width: 1024px) {
+        .container {
+          padding: 20px 16px;
+        }
+        
+        table {
+          min-width: 700px;
+        }
+        
+        th, td {
+          padding: 10px 8px;
+          font-size: 0.9rem;
+        }
+      }
+
+      /* Mobile Styles */
+      @media screen and (max-width: 768px) {
+        body {
+          padding: 12px;
+        }
+
+        h1 {
+          font-size: 1.8rem;
+          padding: 16px 12px;
+          letter-spacing: 1px;
+          margin-bottom: 16px;
+        }
+
+        .container {
+          padding: 16px;
+          border-radius: 8px;
+        }
+
+        .btn-redirect {
+          width: 100%;
+          text-align: center;
+          padding: 14px 20px;
+          margin-bottom: 16px;
+        }
+
+        .table-container {
+          display: none;
+        }
+
+        .mobile-cards {
+          display: block;
+        }
+
+        .action-link {
+          padding: 8px 12px;
+          font-size: 0.85rem;
+          min-width: 60px;
+        }
+      }
+
+      /* Small Mobile Styles */
+      @media screen and (max-width: 480px) {
+        h1 {
+          font-size: 1.6rem;
+          padding: 14px 10px;
+        }
+
+        .container {
+          padding: 12px;
+        }
+
+        .user-card {
+          padding: 12px;
+        }
+
+        .user-card .card-actions {
+          flex-direction: column;
+          gap: 6px;
+        }
+
+        .action-link {
+          text-align: center;
+          width: 100%;
+        }
+
+        .field-label {
+          min-width: 70px;
+          font-size: 0.9rem;
+        }
+      }
+
+      /* Landscape Mobile */
+      @media screen and (max-width: 768px) and (orientation: landscape) {
+        .table-container {
+          display: block;
+        }
+
+        .mobile-cards {
+          display: none;
+        }
+
+        table {
+          min-width: 600px;
+        }
+
+        th, td {
+          padding: 8px 6px;
+          font-size: 0.8rem;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <h1>RFID Registered Users</h1>
+
+    <div class="container">
+      <button class="btn-redirect" onclick="redirectToHome()">
+        Go to Home Page
+      </button>
+
+      {% if users and users|length > 0 %}
+      
+      <!-- Desktop/Tablet Table View -->
+      <div class="table-container">
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>UUID</th>
+              <th>Student ID</th>
+              <th>First Name</th>
+              <th>Last Name</th>
+              <th>Email</th>
+              <th>Role</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for user in users %}
+            <tr>
+              <td>{{ user[0] }}</td>
+              <td>{{ user[1] }}</td>
+              <td>{{ user[2] }}</td>
+              <td>{{ user[3] }}</td>
+              <td>{{ user[4] }}</td>
+              <td>{{ user[6] }}</td>
+              <td>{{ user[7] }}</td>
+              <td>
+                <div class="action-buttons">
+                  <a
+                    href="{{ url_for('edit_user_route', id=user[0]) }}"
+                    class="action-link edit"
+                    >Edit</a
+                  >
+                  <a
+                    href="{{ url_for('delete_user_route', id=user[2]) }}"
+                    class="action-link delete"
+                    onclick="return confirmDelete();"
+                    >Delete</a
+                  >
+                </div>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Mobile Card View -->
+      <div class="mobile-cards">
+        {% for user in users %}
+        <div class="user-card">
+          <div class="card-header">
+            <div class="card-id">ID: {{ user[0] }}</div>
+            <div class="card-actions">
+              <a
+                href="{{ url_for('edit_user_route', id=user[0]) }}"
+                class="action-link edit"
+                >Edit</a
+              >
+              <a
+                href="{{ url_for('delete_user_route', id=user[0]) }}"
+                class="action-link delete"
+                onclick="return confirmDelete();"
+                >Delete</a
+              >
+            </div>
+          </div>
+          
+          <div class="card-field">
+            <div class="field-label">UUID:</div>
+            <div class="field-value">{{ user[1] }}</div>
+          </div>
+          
+          <div class="card-field">
+            <div class="field-label">User ID:</div>
+            <div class="field-value">{{ user[2] }}</div>
+          </div>
+          
+          <div class="card-field">
+            <div class="field-label">Name:</div>
+            <div class="field-value">{{ user[3] }} {{ user[4] }}</div>
+          </div>
+          
+          <div class="card-field">
+            <div class="field-label">Email:</div>
+            <div class="field-value">{{ user[6] }}</div>
+          </div>
+          
+          <div class="card-field">
+            <div class="field-label">Role:</div>
+            <div class="field-value">{{ user[7] }}</div>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+
+      {% else %}
+      <div class="no-users">
+        <p>No users found.</p>
+      </div>
+      {% endif %}
+    </div>
+
+    <script>
+      function confirmDelete() {
+        return confirm("Are you sure you want to delete this user?");
+      }
+
+      function redirectToHome() {
+        window.location.href = "/register";
+      }
+    </script>
+  </body>
+</html>
