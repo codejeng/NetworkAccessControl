@@ -1735,7 +1735,7 @@ if __name__ == '__main__':
     print("📊 Admin Dashboard: http://localhost:5000/admin")
     print("📝 Student Request Page: http://localhost:5000/request")
     print("🔌 API Endpoints: http://localhost:5000/api/")
-    print("💾 Database: room_access.db")
+    print("💾 Database: database.db")
     
     background_tasks()
 

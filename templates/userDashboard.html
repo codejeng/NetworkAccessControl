@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -166,10 +167,21 @@
             color: white;
         }
 
-        .stat-icon.total { background: linear-gradient(135deg, #667eea, #764ba2); }
-        .stat-icon.approved { background: linear-gradient(135deg, #4facfe, #00f2fe); }
-        .stat-icon.pending { background: linear-gradient(135deg, #f093fb, #f5576c); }
-        .stat-icon.expired { background: linear-gradient(135deg, #ffecd2, #fcb69f); }
+        .stat-icon.total {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+        }
+
+        .stat-icon.approved {
+            background: linear-gradient(135deg, #4facfe, #00f2fe);
+        }
+
+        .stat-icon.pending {
+            background: linear-gradient(135deg, #f093fb, #f5576c);
+        }
+
+        .stat-icon.expired {
+            background: linear-gradient(135deg, #ffecd2, #fcb69f);
+        }
 
         .stat-number {
             font-size: 2.5em;
@@ -221,7 +233,8 @@
             background: white;
         }
 
-        th, td {
+        th,
+        td {
             padding: 15px;
             text-align: left;
             border-bottom: 1px solid #f0f0f0;
@@ -250,10 +263,25 @@
             letter-spacing: 1px;
         }
 
-        .status-approved { background: #d4edda; color: #155724; }
-        .status-pending { background: #fff3cd; color: #856404; }
-        .status-denied { background: #f8d7da; color: #721c24; }
-        .status-expired { background: #e2e3e5; color: #383d41; }
+        .status-approved {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .status-pending {
+            background: #fff3cd;
+            color: #856404;
+        }
+
+        .status-denied {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        .status-expired {
+            background: #e2e3e5;
+            color: #383d41;
+        }
 
         .actions-btn {
             background: linear-gradient(135deg, #667eea, #764ba2);
@@ -305,9 +333,21 @@
             animation: spin 1s linear infinite;
         }
 
+        .left-button {
+            position: absolute;
+            left: 30px;
+            top: 30px;
+        }
+
+
         @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
+            0% {
+                transform: rotate(0deg);
+            }
+
+            100% {
+                transform: rotate(360deg);
+            }
         }
 
         .error-message {
@@ -348,37 +388,46 @@
             .container {
                 padding: 10px;
             }
-            
+
             .header h1 {
                 font-size: 2em;
             }
-            
+
             .user-info {
                 flex-direction: column;
                 gap: 10px;
             }
-            
+
             .stats-grid {
                 grid-template-columns: 1fr;
             }
-            
-            table, th, td {
+
+            table,
+            th,
+            td {
                 font-size: 14px;
             }
-            
-            th, td {
+
+            th,
+            td {
                 padding: 10px 5px;
             }
         }
     </style>
 </head>
+
 <body>
     <div class="container">
         <!-- Header -->
         <div class="header">
+            <div class="left-button">
+                <button class="logout-btn" onclick="goHome()">
+                    <i class="fas fa-home"></i> หน้าแรก
+                </button>
+            </div>
             <h1><i class="fas fa-door-open"></i> Room Access Control</h1>
             <p>Student Dashboard</p>
-            
+
             <div class="user-info" id="userInfo" style="display: none;">
                 <div class="user-card">
                     <i class="fas fa-user"></i>
@@ -392,6 +441,7 @@
                     <i class="fas fa-sign-out-alt"></i> Logout
                 </button>
             </div>
+
         </div>
 
         <!-- Login Section -->
@@ -463,17 +513,17 @@
                 <div class="section-header">
                     <h2 class="section-title">คำขอของฉัน</h2>
                 </div>
-                
+
                 <div id="requestsLoading" class="loading">
                     <i class="fas fa-spinner"></i>
                     <p>กำลังโหลดข้อมูล...</p>
                 </div>
-                
+
                 <div id="requestsError" class="error-message" style="display: none;">
                     <i class="fas fa-exclamation-triangle"></i>
                     <span id="errorText">เกิดข้อผิดพลาดในการโหลดข้อมูล</span>
                 </div>
-                
+
                 <div class="table-container" id="requestsTable" style="display: none;">
                     <table>
                         <thead>
@@ -500,10 +550,10 @@
         let currentStudentId = null;
 
         // Initialize the page
-        document.addEventListener('DOMContentLoaded', async function() {
+        document.addEventListener('DOMContentLoaded', async function () {
             // Check if user is already logged in and still valid
             const isValidUser = await validateStoredUser();
-            
+
             if (isValidUser) {
                 const savedStudentId = localStorage.getItem('studentId');
                 document.getElementById('studentId').value = savedStudentId;
@@ -511,17 +561,21 @@
             }
         });
 
+        function goHome() {
+            window.location.href = '/';
+        }
+
         async function login() {
             const studentId = document.getElementById('studentId').value.trim();
             const loginBtn = document.getElementById('loginBtn');
-            
+
             if (!studentId) {
                 showError('กรุณากรอกรหัสประจำตัวนักศึกษา');
                 return;
             }
 
-            if (!/^\d{10}$/.test(studentId)) {
-                showError('รหัสประจำตัวนักศึกษาต้องเป็นตัวเลข 10 หลัก');
+            if (!/^\d{8,}$/.test(studentId)) {
+                showError('รหัสประจำตัวนักศึกษาต้องเป็นตัวเลข 8 หลัก');
                 return;
             }
 
@@ -531,7 +585,7 @@
             try {
                 // First, validate if user exists in the system
                 const userValidationResponse = await fetch(`/api/validate-user/${studentId}`);
-                
+
                 if (!userValidationResponse.ok) {
                     if (userValidationResponse.status === 404) {
                         throw new Error('ไม่พบรหัสประจำตัวนักศึกษาในระบบ กรุณาติดต่อผู้ดูแลระบบ');
@@ -541,29 +595,29 @@
                 }
 
                 const userValidationData = await userValidationResponse.json();
-                
+
                 if (!userValidationData.exists) {
                     throw new Error('ไม่พบรหัสประจำตัวนักศึกษาในระบบ กรุณาติดต่อผู้ดูแลระบบ');
                 }
 
                 // If user exists, then get their requests
                 const requestsResponse = await fetch(`/api/student/my_requests/${studentId}`);
-                
+
                 if (!requestsResponse.ok) {
                     throw new Error('ไม่สามารถโหลดข้อมูลคำขอได้');
                 }
 
                 const requestsData = await requestsResponse.json();
-                
+
                 // Set current user info
                 currentStudentId = studentId;
-                
+
                 // Save to localStorage
                 localStorage.setItem('studentId', studentId);
-                
+
                 // Show dashboard
                 showDashboard(requestsData.requests, userValidationData.user);
-                
+
             } catch (error) {
                 showError(error.message || 'เกิดข้อผิดพลาดในการเข้าสู่ระบบ');
             } finally {
@@ -575,14 +629,14 @@
         function showDashboard(requests, userData = null) {
             // Hide login section
             document.getElementById('loginSection').style.display = 'none';
-            
+
             // Show dashboard content
             document.getElementById('dashboardContent').style.display = 'block';
-            
+
             // Update user info
             document.getElementById('userInfo').style.display = 'flex';
             document.getElementById('userStudentId').textContent = currentStudentId;
-            
+
             // Set user name from userData if available, otherwise from requests
             if (userData && userData.name) {
                 document.getElementById('userName').textContent = userData.name;
@@ -591,10 +645,10 @@
             } else {
                 document.getElementById('userName').textContent = 'ผู้ใช้ระบบ';
             }
-            
+
             // Update statistics
             updateStatistics(requests);
-            
+
             // Update requests table
             updateRequestsTable(requests);
         }
@@ -604,13 +658,13 @@
             if (savedStudentId) {
                 try {
                     const userValidationResponse = await fetch(`/api/validate-user/${savedStudentId}`);
-                    
+
                     if (!userValidationResponse.ok || !(await userValidationResponse.json()).exists) {
                         // User no longer exists in system, clear storage and show login
                         localStorage.removeItem('studentId');
                         return false;
                     }
-                    
+
                     return true;
                 } catch (error) {
                     // On error, clear storage and show login
@@ -623,12 +677,12 @@
 
         function updateStatistics(requests) {
             const now = new Date();
-            
+
             let total = requests.length;
             let approved = 0;
             let pending = 0;
             let expired = 0;
-            
+
             requests.forEach(request => {
                 if (request.access) {
                     // Check if expired
@@ -642,7 +696,7 @@
                     pending++;
                 }
             });
-            
+
             document.getElementById('totalRequests').textContent = total;
             document.getElementById('approvedRequests').textContent = approved;
             document.getElementById('pendingRequests').textContent = pending;
@@ -652,29 +706,29 @@
         function updateRequestsTable(requests) {
             const tbody = document.getElementById('requestsTableBody');
             const now = new Date();
-            
+
             // Hide loading
             document.getElementById('requestsLoading').style.display = 'none';
-            
+
             if (requests.length === 0) {
                 tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; padding: 40px;">ไม่มีคำขอ</td></tr>';
                 document.getElementById('requestsTable').style.display = 'block';
                 return;
             }
-            
+
             // Sort requests by timestamp (newest first)
             requests.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-            
+
             tbody.innerHTML = '';
-            
+
             requests.forEach(request => {
                 const row = document.createElement('tr');
-                
+
                 // Determine status
                 let status = 'pending';
                 let statusText = 'รอการอนุมัติ';
                 let statusClass = 'status-pending';
-                
+
                 if (request.access) {
                     const endTime = new Date(request.end_time);
                     if (endTime < now) {
@@ -691,7 +745,7 @@
                     statusText = 'ปฏิเสธ';
                     statusClass = 'status-denied';
                 }
-                
+
                 row.innerHTML = `
                     <td><strong>${request.room}</strong></td>
                     <td>${formatDateTime(request.start_time)}</td>
@@ -705,16 +759,16 @@
                         </button>
                     </td>
                 `;
-                
+
                 tbody.appendChild(row);
             });
-            
+
             document.getElementById('requestsTable').style.display = 'block';
         }
 
         function formatDateTime(dateString) {
             if (!dateString) return '-';
-            
+
             try {
                 const date = new Date(dateString);
                 return date.toLocaleString('th-TH', {
@@ -735,29 +789,29 @@
 
         async function refreshData() {
             if (!currentStudentId) return;
-            
+
             // Show loading
             document.getElementById('requestsLoading').style.display = 'block';
             document.getElementById('requestsTable').style.display = 'none';
             document.getElementById('requestsError').style.display = 'none';
-            
+
             try {
                 const response = await fetch(`/api/student/my_requests/${currentStudentId}`);
-                
+
                 if (!response.ok) {
                     throw new Error('ไม่สามารถโหลดข้อมูลได้');
                 }
-                
+
                 const data = await response.json();
-                
+
                 // Update statistics
                 updateStatistics(data.requests);
-                
+
                 // Update requests table
                 updateRequestsTable(data.requests);
-                
+
                 showSuccess('รีเฟรชข้อมูลสำเร็จ');
-                
+
             } catch (error) {
                 document.getElementById('requestsLoading').style.display = 'none';
                 document.getElementById('requestsError').style.display = 'block';
@@ -773,17 +827,17 @@
             localStorage.removeItem('studentId');
             currentUser = null;
             currentStudentId = null;
-            
+
             // Hide dashboard
             document.getElementById('dashboardContent').style.display = 'none';
             document.getElementById('userInfo').style.display = 'none';
-            
+
             // Show login
             document.getElementById('loginSection').style.display = 'block';
-            
+
             // Clear form
             document.getElementById('studentId').value = '';
-            
+
             showSuccess('ออกจากระบบสำเร็จ');
         }
 
@@ -792,10 +846,10 @@
             const errorDiv = document.createElement('div');
             errorDiv.className = 'error-message';
             errorDiv.innerHTML = `<i class="fas fa-exclamation-triangle"></i> ${message}`;
-            
+
             const loginSection = document.getElementById('loginSection');
             loginSection.appendChild(errorDiv);
-            
+
             setTimeout(() => {
                 errorDiv.remove();
             }, 5000);
@@ -806,21 +860,22 @@
             const successDiv = document.createElement('div');
             successDiv.className = 'success-message';
             successDiv.innerHTML = `<i class="fas fa-check-circle"></i> ${message}`;
-            
+
             const container = document.querySelector('.container');
             container.insertBefore(successDiv, container.firstChild);
-            
+
             setTimeout(() => {
                 successDiv.remove();
             }, 3000);
         }
 
         // Handle Enter key in login form
-        document.getElementById('studentId').addEventListener('keypress', function(e) {
+        document.getElementById('studentId').addEventListener('keypress', function (e) {
             if (e.key === 'Enter') {
                 login();
             }
         });
     </script>
 </body>
+
 </html>
