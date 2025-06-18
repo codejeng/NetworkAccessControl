@@ -1,19 +1,20 @@
-from flask import Flask, request, jsonify, render_template, session, redirect, url_for, flash
+from flask import (
+    Flask, request, jsonify, render_template,
+    session, redirect, url_for, flash, send_from_directory
+)
 from functools import wraps
+from flask_socketio import SocketIO, emit
+from flask_cors import CORS
 import sqlite3
 from datetime import datetime, timedelta
 import logging
 import threading
 import time
 import requests
-
-from flask import Flask, render_template, request, redirect, url_for, jsonify, send_from_directory
-from flask_socketio import SocketIO, emit
-from flask_cors import CORS
-import sqlite3
 import os
 import csv
 from uuid import uuid4
+
 
 app = Flask(__name__)
 
